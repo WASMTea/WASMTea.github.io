@@ -1,0 +1,15 @@
+{
+  "name": "graph-editor",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "graph_editor_bg.wasm",
+    "graph_editor.js",
+    "graph_editor.d.ts"
+  ],
+  "main": "graph_editor.js",
+  "types": "graph_editor.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}
