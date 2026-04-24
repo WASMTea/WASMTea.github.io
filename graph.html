@@ -235,6 +235,32 @@
       text-align: center;
       margin-top: 2rem;
     }
+
+    details { margin-bottom: 0.6rem; }
+    details > summary {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #4a9eff;
+      padding: 0.3rem 0;
+      border-bottom: 1px solid #0f3460;
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      user-select: none;
+    }
+    details > summary::after {
+      content: '▶';
+      font-size: 0.55rem;
+      color: #4a9eff;
+      transition: transform 0.15s;
+    }
+    details[open] > summary::after { transform: rotate(90deg); }
+    details > summary::-webkit-details-marker { display: none; }
+    .section-body { padding-top: 0.2rem; }
   </style>
 </head>
 <body>
@@ -501,22 +527,224 @@
       render();
     });
 
+    // ── spectral & extended metrics helpers ──────────────────────────────────
+
+    function jacobiEig(M, n) {
+      const A = M.map(row => Float64Array.from(row));
+      for (let iter = 0; iter < 100 * n * n; iter++) {
+        let p = 0, q = 1, maxVal = 0;
+        for (let i = 0; i < n; i++)
+          for (let j = i + 1; j < n; j++)
+            if (Math.abs(A[i][j]) > maxVal) { maxVal = Math.abs(A[i][j]); p = i; q = j; }
+        if (maxVal < 1e-10) break;
+        const theta = (A[q][q] - A[p][p]) / (2 * A[p][q]);
+        const t = Math.sign(theta) / (Math.abs(theta) + Math.sqrt(1 + theta * theta));
+        const c = 1 / Math.sqrt(1 + t * t), s = t * c;
+        const Apq = A[p][q];
+        A[p][p] -= t * Apq; A[q][q] += t * Apq; A[p][q] = A[q][p] = 0;
+        for (let r = 0; r < n; r++) {
+          if (r === p || r === q) continue;
+          const Arp = A[r][p], Arq = A[r][q];
+          A[r][p] = A[p][r] = c * Arp - s * Arq;
+          A[r][q] = A[q][r] = s * Arp + c * Arq;
+        }
+      }
+      return Array.from({length: n}, (_, i) => A[i][i]);
+    }
+
+    function hamCycle(start, n, amat) {
+      const vis = new Uint8Array(n); vis[start] = 1;
+      function bt(v, d) {
+        if (d === n) return amat[v][start] === 1;
+        for (let u = 0; u < n; u++)
+          if (!vis[u] && amat[v][u]) { vis[u] = 1; if (bt(u, d + 1)) return true; vis[u] = 0; }
+        return false;
+      }
+      return bt(start, 1);
+    }
+
+    function hamPath(n, amat) {
+      const vis = new Uint8Array(n);
+      function bt(v, d) {
+        if (d === n) return true;
+        for (let u = 0; u < n; u++)
+          if (!vis[u] && amat[v][u]) { vis[u] = 1; if (bt(u, d + 1)) return true; vis[u] = 0; }
+        return false;
+      }
+      for (let s = 0; s < n; s++) { vis.fill(0); vis[s] = 1; if (bt(s, 1)) return true; }
+      return false;
+    }
+
+    function augmentMatch(v, adj, match, vis) {
+      for (const u of adj[v]) {
+        if (vis[u]) continue; vis[u] = 1;
+        if (match[u] === -1 || augmentMatch(match[u], adj, match, vis)) {
+          match[v] = u; match[u] = v; return true;
+        }
+      }
+      return false;
+    }
+
+    function computeExtendedMetrics(n, adj, base) {
+      const degrees = adj.map(a => a.length);
+      const m = base.edge_count;
+      const isConnected = base.is_connected;
+
+      const amat = Array.from({length: n}, (_, i) => {
+        const row = new Uint8Array(n);
+        adj[i].forEach(j => { row[j] = 1; });
+        return row;
+      });
+
+      const isTree    = isConnected && m === n - 1;
+      const isRegular = n > 0 && degrees.every(d => d === degrees[0]);
+
+      // Degree-based indices
+      let m1 = 0, m2 = 0, randic = 0, harmonic = 0, albertson = 0;
+      for (let i = 0; i < n; i++) {
+        m1 += degrees[i] * degrees[i];
+        for (const j of adj[i]) if (j > i) {
+          m2        += degrees[i] * degrees[j];
+          randic    += degrees[i] && degrees[j] ? 1 / Math.sqrt(degrees[i] * degrees[j]) : 0;
+          harmonic  += 2 / (degrees[i] + degrees[j] || 1);
+          albertson += Math.abs(degrees[i] - degrees[j]);
+        }
+      }
+
+      // Triangles
+      let triangles = 0;
+      for (let i = 0; i < n; i++)
+        for (const j of adj[i]) if (j > i)
+          for (const k of adj[j]) if (k > j && amat[i][k]) triangles++;
+
+      // Quadrangles (C4), n ≤ 100
+      let quadrangles = null;
+      if (n <= 100) {
+        const p2 = Array.from({length: n}, () => new Int32Array(n));
+        for (let w = 0; w < n; w++)
+          for (let ai = 0; ai < adj[w].length; ai++)
+            for (let bi = ai + 1; bi < adj[w].length; bi++) {
+              const u = adj[w][ai], v = adj[w][bi];
+              p2[Math.min(u, v)][Math.max(u, v)]++;
+            }
+        quadrangles = 0;
+        for (let i = 0; i < n; i++)
+          for (let j = i + 1; j < n; j++) {
+            const c = p2[i][j]; if (c >= 2) quadrangles += c * (c - 1) / 2;
+          }
+      }
+
+      // Girth, n ≤ 200
+      let girth = null;
+      if (n <= 200) {
+        let g = Infinity;
+        for (let s = 0; s < n && g > 3; s++) {
+          const d = new Int32Array(n).fill(-1), par = new Int32Array(n).fill(-1);
+          d[s] = 0;
+          const q = [s];
+          for (let h = 0; h < q.length; h++) {
+            const v = q[h];
+            for (const u of adj[v]) {
+              if (d[u] === -1) { d[u] = d[v] + 1; par[u] = v; q.push(u); }
+              else if (par[v] !== u) { const c = d[v] + d[u] + 1; if (c < g) g = c; }
+            }
+          }
+        }
+        girth = isFinite(g) ? g : -1;
+      }
+
+      // All-pairs BFS, n ≤ 300 (distance-based indices)
+      let distMatrix = null;
+      if (isConnected && n <= 300) {
+        distMatrix = [];
+        for (let s = 0; s < n; s++) {
+          const d = new Int32Array(n).fill(-1); d[s] = 0;
+          const q = [s];
+          for (let h = 0; h < q.length; h++) {
+            const v = q[h];
+            for (const u of adj[v]) if (d[u] === -1) { d[u] = d[v] + 1; q.push(u); }
+          }
+          distMatrix.push(d);
+        }
+      }
+
+      let wiener = null, harary = null, degDist = null, gutman = null, radius = null;
+      if (distMatrix) {
+        wiener = 0; harary = 0; degDist = 0; gutman = 0;
+        const eccs = distMatrix.map(d => Math.max(...d));
+        radius = Math.min(...eccs);
+        for (let i = 0; i < n; i++)
+          for (let j = i + 1; j < n; j++) {
+            const d = distMatrix[i][j];
+            wiener  += d;
+            harary  += 1 / d;
+            degDist += (degrees[i] + degrees[j]) * d;
+            gutman  += degrees[i] * degrees[j] * d;
+          }
+        harary = +harary.toFixed(4);
+      }
+
+      // Spectral (Jacobi), n ≤ 20
+      let adjSpectrum = null, energy = null, spectralRadius = null;
+      let lapSpectrum = null, fiedler = null, lel = null;
+      if (n <= 20 && n > 0) {
+        const Amat = Array.from({length: n}, (_, i) => {
+          const row = new Float64Array(n); adj[i].forEach(j => { row[j] = 1; }); return row;
+        });
+        const eigA = jacobiEig(Amat, n).sort((a, b) => b - a);
+        adjSpectrum    = eigA.map(e => +e.toFixed(4));
+        energy         = +eigA.reduce((s, e) => s + Math.abs(e), 0).toFixed(4);
+        spectralRadius = +Math.max(...eigA.map(Math.abs)).toFixed(4);
+
+        const Lmat = Array.from({length: n}, (_, i) => {
+          const row = new Float64Array(n); row[i] = degrees[i]; adj[i].forEach(j => { row[j] = -1; }); return row;
+        });
+        const eigL = jacobiEig(Lmat, n).map(e => Math.max(0, e)).sort((a, b) => a - b);
+        lapSpectrum = eigL.map(e => +e.toFixed(4));
+        fiedler = lapSpectrum[1] ?? 0;
+        const avgDeg = n > 0 ? 2 * m / n : 0;
+        lel = +eigL.reduce((s, e) => s + Math.abs(e - avgDeg), 0).toFixed(4);
+      }
+
+      // Max matching (augmenting path DFS)
+      const match = new Int32Array(n).fill(-1);
+      let matchingSize = 0;
+      for (let v = 0; v < n; v++) {
+        if (match[v] === -1) {
+          const vis = new Uint8Array(n); vis[v] = 1;
+          if (augmentMatch(v, adj, match, vis)) matchingSize++;
+        }
+      }
+
+      // Hamiltonian (backtracking), n ≤ 15
+      let hamiltonianCycle = null, hamiltonianPath = null;
+      if (n >= 3 && n <= 15) {
+        hamiltonianCycle = hamCycle(0, n, amat);
+        hamiltonianPath  = hamiltonianCycle || hamPath(n, amat);
+      }
+
+      return {
+        isTree, isRegular, regularDeg: isRegular ? degrees[0] : null,
+        triangles, quadrangles, girth,
+        m1, m2,
+        randic: +randic.toFixed(4), harmonic: +harmonic.toFixed(4), albertson,
+        wiener, harary, degDist, gutman, radius,
+        adjSpectrum, energy, spectralRadius, lapSpectrum, fiedler, lel,
+        matchingSize, hamiltonianCycle, hamiltonianPath,
+        distComputed: distMatrix !== null,
+      };
+    }
+
     // ── analysis sidebar ──────────────────────────────────────────────────────
     const analyzeBtn  = document.getElementById('btn-analyze');
     const scrollEl    = document.getElementById('analysis-scroll');
 
     function bool(v) {
-      return v
-        ? '<span class="val yes">Yes</span>'
-        : '<span class="val no">No</span>';
+      return v ? '<span class="val yes">Yes</span>' : '<span class="val no">No</span>';
     }
-
-    function naIfFalse(condition, value) {
-      return condition
-        ? `<span class="val">${value}</span>`
-        : '<span class="val na">N/A</span>';
+    function naV(ok, val) {
+      return ok ? `<span class="val">${val}</span>` : '<span class="val na">N/A</span>';
     }
-
     function row(label, valueHtml) {
       return `<div class="row"><span class="lbl">${label}</span>${valueHtml}</div>`;
     }
@@ -526,66 +754,137 @@
         scrollEl.innerHTML = '<p id="empty-msg">Build a graph, then click Analyze.</p>';
         return;
       }
-
       analyzeBtn.disabled = true;
       analyzeBtn.textContent = '...';
 
-      // Defer so the button visually updates before the (potentially slow) WASM call
       setTimeout(() => {
         const a = JSON.parse(graph.analyze());
 
-        const densityPct = (a.density * 100).toFixed(1) + '%';
-        const avgDeg     = a.avg_degree.toFixed(2);
-        const diamStr    = a.diameter === -1
+        // Build 0-indexed adjacency list for extended metrics
+        const vertices = JSON.parse(graph.vertices_json());
+        const edges    = JSON.parse(graph.edges_json());
+        const n = vertices.length;
+        const idxOf = new Map();
+        vertices.forEach((v, i) => idxOf.set(v.id, i));
+        const adj = Array.from({length: n}, () => []);
+        edges.forEach(e => {
+          const i = idxOf.get(e.from), j = idxOf.get(e.to);
+          if (i !== undefined && j !== undefined) { adj[i].push(j); adj[j].push(i); }
+        });
+
+        const ext = computeExtendedMetrics(n, adj, a);
+
+        const diamStr = a.diameter === -1
           ? '<span class="val na">∞ (disconnected)</span>'
           : `<span class="val">${a.diameter}</span>`;
 
-        const exactNote  = a.exact_computed
-          ? ''
-          : '<div class="row"><span class="lbl" style="color:#e94560;font-size:0.7rem">Graph &gt;25 vertices — NP-hard results skipped</span></div>';
+        const exactNote = a.exact_computed ? '' :
+          '<div class="row"><span class="lbl" style="color:#e94560;font-size:0.7rem">n &gt; 25 — NP-hard skipped</span></div>';
 
         scrollEl.innerHTML = `
-          <div class="section">
-            <div class="section-title">Basic</div>
-            ${row('Vertices',  `<span class="val">${a.vertex_count}</span>`)}
-            ${row('Edges',     `<span class="val">${a.edge_count}</span>`)}
-            ${row('Density',   `<span class="val">${densityPct}</span>`)}
-          </div>
+          <details open>
+            <summary>Basic</summary>
+            <div class="section-body">
+              ${row('Vertices', `<span class="val">${a.vertex_count}</span>`)}
+              ${row('Edges',    `<span class="val">${a.edge_count}</span>`)}
+              ${row('Density',  `<span class="val">${(a.density * 100).toFixed(1)}%</span>`)}
+              ${row('Is tree',  bool(ext.isTree))}
+              ${row('Regular',  ext.isRegular ? `<span class="val yes">Yes (k=${ext.regularDeg})</span>` : '<span class="val no">No</span>')}
+              ${row('Triangles', `<span class="val">${ext.triangles}</span>`)}
+              ${ext.quadrangles !== null ? row('Quadrangles (C₄)', `<span class="val">${ext.quadrangles}</span>`) : ''}
+              ${ext.girth !== null ? row('Girth', ext.girth === -1 ? '<span class="val na">∞ (acyclic)</span>' : `<span class="val">${ext.girth}</span>`) : ''}
+            </div>
+          </details>
 
-          <div class="section">
-            <div class="section-title">Connectivity</div>
-            ${row('Connected',   bool(a.is_connected))}
-            ${row('Components',  `<span class="val">${a.connected_components}</span>`)}
-            ${row('Diameter',    diamStr)}
-          </div>
+          <details open>
+            <summary>Connectivity</summary>
+            <div class="section-body">
+              ${row('Connected',  bool(a.is_connected))}
+              ${row('Components', `<span class="val">${a.connected_components}</span>`)}
+              ${row('Diameter',   diamStr)}
+              ${ext.radius !== null ? row('Radius', `<span class="val">${ext.radius}</span>`) : ''}
+            </div>
+          </details>
 
-          <div class="section">
-            <div class="section-title">Degrees</div>
-            ${row('Min degree', `<span class="val">${a.min_degree}</span>`)}
-            ${row('Max degree', `<span class="val">${a.max_degree}</span>`)}
-            ${row('Avg degree', `<span class="val">${avgDeg}</span>`)}
-            <div class="degree-seq">(${a.degree_sequence.join(', ')})</div>
-          </div>
+          <details open>
+            <summary>Degrees</summary>
+            <div class="section-body">
+              ${row('Min', `<span class="val">${a.min_degree}</span>`)}
+              ${row('Max', `<span class="val">${a.max_degree}</span>`)}
+              ${row('Avg', `<span class="val">${a.avg_degree.toFixed(2)}</span>`)}
+              <div class="degree-seq">(${a.degree_sequence.join(', ')})</div>
+            </div>
+          </details>
 
-          <div class="section">
-            <div class="section-title">Properties</div>
-            ${row('Bipartite',        bool(a.is_bipartite))}
-            ${row('Eulerian circuit', bool(a.has_eulerian_circuit))}
-            ${row('Eulerian path',    bool(a.has_eulerian_path))}
-          </div>
+          <details open>
+            <summary>Properties</summary>
+            <div class="section-body">
+              ${row('Bipartite',        bool(a.is_bipartite))}
+              ${row('Eulerian circuit', bool(a.has_eulerian_circuit))}
+              ${row('Eulerian path',    bool(a.has_eulerian_path))}
+            </div>
+          </details>
 
-          <div class="section">
-            <div class="section-title">Coloring</div>
-            ${row('Chromatic # (greedy)', `<span class="val">${a.chromatic_number_greedy}</span>`)}
-          </div>
+          <details>
+            <summary>Degree Indices</summary>
+            <div class="section-body">
+              ${row('Zagreb M₁',  `<span class="val">${ext.m1}</span>`)}
+              ${row('Zagreb M₂',  `<span class="val">${ext.m2}</span>`)}
+              ${row('Randić',     `<span class="val">${ext.randic}</span>`)}
+              ${row('Harmonic',   `<span class="val">${ext.harmonic}</span>`)}
+              ${row('Albertson',  `<span class="val">${ext.albertson}</span>`)}
+            </div>
+          </details>
 
-          <div class="section">
-            <div class="section-title">NP-Hard (Exact)</div>
-            ${exactNote}
-            ${row('Max independent set', naIfFalse(a.exact_computed, a.max_independent_set))}
-            ${row('Min vertex cover',    naIfFalse(a.exact_computed, a.min_vertex_cover))}
-            ${row('Max clique',          naIfFalse(a.exact_computed, a.max_clique))}
-          </div>
+          <details>
+            <summary>Distance Indices</summary>
+            <div class="section-body">
+              ${ext.distComputed ? `
+                ${row('Wiener',          `<span class="val">${ext.wiener}</span>`)}
+                ${row('Harary',          `<span class="val">${ext.harary}</span>`)}
+                ${row('Degree Distance', `<span class="val">${ext.degDist}</span>`)}
+                ${row('Gutman',          `<span class="val">${ext.gutman}</span>`)}
+              ` : '<div class="row"><span class="lbl" style="color:#666;font-style:italic">N/A (disconnected)</span></div>'}
+            </div>
+          </details>
+
+          <details>
+            <summary>Spectral <small style="color:#555;text-transform:none;font-weight:400;letter-spacing:0">(n≤20)</small></summary>
+            <div class="section-body">
+              ${ext.adjSpectrum ? `
+                ${row('Spectral radius', `<span class="val">${ext.spectralRadius}</span>`)}
+                ${row('Energy',          `<span class="val">${ext.energy}</span>`)}
+                <div class="degree-seq">λ: [${ext.adjSpectrum.join(', ')}]</div>
+                ${row('Fiedler value',   `<span class="val">${ext.fiedler}</span>`)}
+                ${row('Lap. energy (LEL)', `<span class="val">${ext.lel}</span>`)}
+                <div class="degree-seq">μ: [${ext.lapSpectrum.join(', ')}]</div>
+              ` : '<div class="row"><span class="val na">N/A (n &gt; 20)</span></div>'}
+            </div>
+          </details>
+
+          <details>
+            <summary>Matching &amp; Coloring</summary>
+            <div class="section-body">
+              ${row('Max matching',         `<span class="val">${ext.matchingSize}</span>`)}
+              ${row('Chromatic # (greedy)', `<span class="val">${a.chromatic_number_greedy}</span>`)}
+            </div>
+          </details>
+
+          <details open>
+            <summary>NP-Hard <small style="color:#555;text-transform:none;font-weight:400;letter-spacing:0">(n≤25/15)</small></summary>
+            <div class="section-body">
+              ${exactNote}
+              ${row('Max independent set', naV(a.exact_computed, a.max_independent_set))}
+              ${row('Min vertex cover',    naV(a.exact_computed, a.min_vertex_cover))}
+              ${row('Max clique',          naV(a.exact_computed, a.max_clique))}
+              ${ext.hamiltonianCycle !== null
+                ? row('Hamiltonian cycle', bool(ext.hamiltonianCycle))
+                : row('Hamiltonian cycle', '<span class="val na">N/A (n &gt; 15)</span>')}
+              ${ext.hamiltonianPath !== null
+                ? row('Hamiltonian path', bool(ext.hamiltonianPath))
+                : row('Hamiltonian path', '<span class="val na">N/A (n &gt; 15)</span>')}
+            </div>
+          </details>
         `;
 
         analyzeBtn.disabled = false;
