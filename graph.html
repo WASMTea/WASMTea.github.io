@@ -47,6 +47,32 @@
     #hint  { margin-left: auto; font-size: 0.75rem; color: #666; }
     #stats { font-size: 0.75rem; color: #555; }
 
+    /* ── I/O group ─────────────────────────────────────────────────────────── */
+    .io-group { position: relative; display: flex; gap: 0.3rem; }
+
+    .io-menu {
+      display: none;
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      background: #16213e;
+      border: 1px solid #0f3460;
+      border-radius: 4px;
+      z-index: 100;
+      min-width: 160px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+    }
+    .io-menu.open { display: block; }
+
+    .io-opt {
+      padding: 0.4rem 0.75rem;
+      font-size: 0.78rem;
+      color: #bbb;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .io-opt:hover { background: #1a4a8a; color: #fff; }
+
     /* ── main area ─────────────────────────────────────────────────────── */
     .main {
       display: flex;
@@ -293,6 +319,18 @@
       <button class="tool-btn" id="btn-delete" title="Click vertex or edge to delete">Delete</button>
     </div>
     <span id="stats">0 vertices · 0 edges</span>
+    <div class="io-group">
+      <button class="tool-btn" id="btn-save">Save ▾</button>
+      <div class="io-menu" id="save-menu">
+        <div class="io-opt" data-fmt="json">JSON (.json)</div>
+        <div class="io-opt" data-fmt="graphml">GraphML (.graphml)</div>
+        <div class="io-opt" data-fmt="gml">GML (.gml)</div>
+        <div class="io-opt" data-fmt="dot">DOT (.dot)</div>
+        <div class="io-opt" data-fmt="csv">CSV edge list (.csv)</div>
+      </div>
+      <button class="tool-btn" id="btn-load">Load</button>
+      <input type="file" id="file-input" accept=".json,.graphml,.gml,.dot,.gv,.csv" style="display:none">
+    </div>
     <span id="hint">Click on the canvas to add a vertex</span>
   </header>
 
@@ -331,6 +369,7 @@
     import init, { Graph } from './graph/pkg/graph_editor.js';
     import { computeExtendedMetrics } from './js/reports.js';
     import { CATEGORIES, findGenerator } from './js/generators.js';
+    import { FORMATS, serialize, deserialize, triggerDownload } from './js/io.js';
     await init();
 
     // ── canvas setup ─────────────────────────────────────────────────────────
@@ -504,6 +543,73 @@
         document.getElementById('tab-analyze').hidden  = target !== 'analyze';
       });
     });
+
+    // ── save / load ───────────────────────────────────────────────────────────
+    function graphData() {
+      const vertices = JSON.parse(graph.vertices_json());
+      const edges    = JSON.parse(graph.edges_json());
+      const n = vertices.length;
+      const idxOf = new Map(vertices.map((v, i) => [v.id, i]));
+      return {
+        n,
+        edges:    edges.map(e => [idxOf.get(e.from), idxOf.get(e.to)]),
+        vertices: vertices.map(v => ({ x: v.x, y: v.y, label: v.label })),
+      };
+    }
+
+    function applyLoaded(data) {
+      JSON.parse(graph.vertices_json()).forEach(v => graph.delete_vertex(v.id));
+      const hasPos = data.vertices?.some(v => v.x != null);
+      const cx = canvas.width / 2, cy = canvas.height / 2;
+      const r  = Math.min(canvas.width, canvas.height) * 0.38;
+      const positions = hasPos
+        ? data.vertices.map(v => [v.x ?? 0, v.y ?? 0])
+        : circlePos(data.n, cx, cy, r);
+      const ids = positions.map(([x, y]) => graph.add_vertex(x, y));
+      data.edges.forEach(([u, v]) => {
+        if (u != null && v != null && u < ids.length && v < ids.length)
+          graph.add_edge(ids[u], ids[v]);
+      });
+      updateStats(); render();
+    }
+
+    const saveMenu  = document.getElementById('save-menu');
+    const fileInput = document.getElementById('file-input');
+
+    document.getElementById('btn-save').addEventListener('click', e => {
+      saveMenu.classList.toggle('open');
+      e.stopPropagation();
+    });
+
+    saveMenu.addEventListener('click', e => {
+      const opt = e.target.closest('.io-opt');
+      if (!opt) return;
+      const fmt = FORMATS.find(f => f.id === opt.dataset.fmt);
+      if (!fmt) return;
+      const text = serialize(graphData(), fmt.id);
+      triggerDownload(text, `graph${fmt.ext}`, fmt.mime);
+      saveMenu.classList.remove('open');
+    });
+
+    document.getElementById('btn-load').addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => {
+        try {
+          const data = deserialize(ev.target.result, file.name);
+          applyLoaded(data);
+        } catch (err) {
+          alert(`Load failed: ${err.message}`);
+        }
+      };
+      reader.readAsText(file);
+      fileInput.value = '';
+    });
+
+    document.addEventListener('click', () => saveMenu.classList.remove('open'));
 
     // ── graph generators ──────────────────────────────────────────────────────
     let selectedGen = null;
