@@ -699,6 +699,7 @@
       const degrees = adj.map(a => a.length);
       const m = base.edge_count;
       const isConnected = base.is_connected;
+      const maxDeg = n > 0 ? Math.max(...degrees) : 0;
 
       const amat = Array.from({length: n}, (_, i) => {
         const row = new Uint8Array(n);
@@ -709,14 +710,36 @@
       const isTree    = isConnected && m === n - 1;
       const isRegular = n > 0 && degrees.every(d => d === degrees[0]);
 
+      const colorB = new Int8Array(n).fill(-1);
+      let isBip = true;
+      bip: for (let s = 0; s < n; s++) {
+        if (colorB[s] !== -1) continue;
+        colorB[s] = 0;
+        const bq = [s];
+        for (let h = 0; h < bq.length; h++) {
+          const v = bq[h];
+          for (const u of adj[v]) {
+            if (colorB[u] === -1) { colorB[u] = 1 - colorB[v]; bq.push(u); }
+            else if (colorB[u] === colorB[v]) { isBip = false; break bip; }
+          }
+        }
+      }
+      const chromaticIndex = isBip ? String(maxDeg) : `${maxDeg}–${maxDeg + 1}`;
+
       let m1 = 0, m2 = 0, randic = 0, harmonic = 0, albertson = 0;
+      let forgotten = 0, ga = 0, sumConn = 0, azi = 0;
       for (let i = 0; i < n; i++) {
-        m1 += degrees[i] * degrees[i];
+        m1       += degrees[i] ** 2;
+        forgotten += degrees[i] ** 3;
         for (const j of adj[i]) if (j > i) {
-          m2        += degrees[i] * degrees[j];
-          randic    += degrees[i] && degrees[j] ? 1 / Math.sqrt(degrees[i] * degrees[j]) : 0;
-          harmonic  += 2 / (degrees[i] + degrees[j] || 1);
-          albertson += Math.abs(degrees[i] - degrees[j]);
+          const di = degrees[i], dj = degrees[j], s2 = di + dj;
+          m2        += di * dj;
+          randic    += di && dj ? 1 / Math.sqrt(di * dj) : 0;
+          harmonic  += 2 / (s2 || 1);
+          albertson += Math.abs(di - dj);
+          ga        += s2 > 0 ? 2 * Math.sqrt(di * dj) / s2 : 0;
+          sumConn   += s2 > 0 ? 1 / Math.sqrt(s2) : 0;
+          if (s2 > 2) azi += ((di * dj) / (s2 - 2)) ** 3;
         }
       }
 
@@ -773,24 +796,49 @@
         }
       }
 
-      let wiener = null, harary = null, degDist = null, gutman = null, radius = null;
+      let wiener = null, harary = null, hyperWiener = null, avgDist = null;
+      let degDist = null, gutman = null, radius = null;
+      let mostar = null, szeged = null, piIndex = null;
+      let totalEcc = null, avgEcc = null, eccConn = null, connEcc = null;
+
       if (distMatrix) {
-        wiener = 0; harary = 0; degDist = 0; gutman = 0;
+        wiener = 0; harary = 0; hyperWiener = 0; degDist = 0; gutman = 0;
         const eccs = distMatrix.map(d => Math.max(...d));
-        radius = Math.min(...eccs);
+        radius   = Math.min(...eccs);
+        totalEcc = eccs.reduce((s, e) => s + e, 0);
+        avgEcc   = +(totalEcc / n).toFixed(4);
+        eccConn  = eccs.reduce((s, e, i) => s + degrees[i] * e, 0);
+        connEcc  = +eccs.reduce((s, e, i) => s + (e > 0 ? degrees[i] / e : 0), 0).toFixed(4);
         for (let i = 0; i < n; i++)
           for (let j = i + 1; j < n; j++) {
             const d = distMatrix[i][j];
-            wiener  += d;
-            harary  += 1 / d;
-            degDist += (degrees[i] + degrees[j]) * d;
-            gutman  += degrees[i] * degrees[j] * d;
+            wiener      += d;
+            harary      += 1 / d;
+            hyperWiener += d + d * d;
+            degDist     += (degrees[i] + degrees[j]) * d;
+            gutman      += degrees[i] * degrees[j] * d;
           }
-        harary = +harary.toFixed(4);
+        harary  = +harary.toFixed(4);
+        avgDist = n > 1 ? +(wiener / (n * (n - 1) / 2)).toFixed(4) : 0;
+        if (n <= 100) {
+          szeged = 0; piIndex = 0; mostar = 0;
+          for (let u = 0; u < n; u++)
+            for (const v of adj[u]) if (v > u) {
+              let nu = 0, nv = 0;
+              for (let w = 0; w < n; w++) {
+                if (distMatrix[u][w] < distMatrix[v][w]) nu++;
+                else if (distMatrix[v][w] < distMatrix[u][w]) nv++;
+              }
+              szeged  += nu * nv;
+              piIndex += nu + nv;
+              mostar  += Math.abs(nu - nv);
+            }
+        }
       }
 
-      let adjSpectrum = null, energy = null, spectralRadius = null;
-      let lapSpectrum = null, fiedler = null, lel = null;
+      let adjSpectrum = null, energy = null, spectralRadius = null, estrada = null;
+      let lapSpectrum = null, fiedler = null, lel = null, spanningTrees = null;
+      let slSpectrum = null, slEnergy = null;
       if (n <= 20 && n > 0) {
         const Amat = Array.from({length: n}, (_, i) => {
           const row = new Float64Array(n); adj[i].forEach(j => { row[j] = 1; }); return row;
@@ -799,6 +847,7 @@
         adjSpectrum    = eigA.map(e => +e.toFixed(4));
         energy         = +eigA.reduce((s, e) => s + Math.abs(e), 0).toFixed(4);
         spectralRadius = +Math.max(...eigA.map(Math.abs)).toFixed(4);
+        estrada        = +eigA.reduce((s, e) => s + Math.exp(e), 0).toFixed(4);
 
         const Lmat = Array.from({length: n}, (_, i) => {
           const row = new Float64Array(n); row[i] = degrees[i]; adj[i].forEach(j => { row[j] = -1; }); return row;
@@ -806,8 +855,19 @@
         const eigL = jacobiEig(Lmat, n).map(e => Math.max(0, e)).sort((a, b) => a - b);
         lapSpectrum = eigL.map(e => +e.toFixed(4));
         fiedler = lapSpectrum[1] ?? 0;
-        const avgDeg = n > 0 ? 2 * m / n : 0;
-        lel = +eigL.reduce((s, e) => s + Math.abs(e - avgDeg), 0).toFixed(4);
+        const avgD = n > 0 ? 2 * m / n : 0;
+        lel = +eigL.reduce((s, e) => s + Math.abs(e - avgD), 0).toFixed(4);
+        if (isConnected) {
+          const nz = eigL.filter(e => e > 0.1);
+          if (nz.length === n - 1) spanningTrees = Math.round(nz.reduce((p, e) => p * e, 1) / n);
+        }
+
+        const Qmat = Array.from({length: n}, (_, i) => {
+          const row = new Float64Array(n); row[i] = degrees[i]; adj[i].forEach(j => { row[j] = 1; }); return row;
+        });
+        const eigQ = jacobiEig(Qmat, n).sort((a, b) => b - a);
+        slSpectrum = eigQ.map(e => +e.toFixed(4));
+        slEnergy   = +eigQ.reduce((s, e) => s + Math.abs(e), 0).toFixed(4);
       }
 
       const match = new Int32Array(n).fill(-1);
@@ -825,13 +885,32 @@
         hamiltonianPath  = hamiltonianCycle || lgHamPath(n, amat);
       }
 
+      let pruferSeq = null;
+      if (isTree && n >= 3 && n <= 30) {
+        const deg2 = [...degrees]; pruferSeq = [];
+        const removed = new Uint8Array(n);
+        for (let step = 0; step < n - 2; step++) {
+          let leaf = -1;
+          for (let i = 0; i < n; i++) if (!removed[i] && deg2[i] === 1) { leaf = i; break; }
+          if (leaf === -1) break;
+          const nb = adj[leaf].find(u => !removed[u]);
+          if (nb === undefined) break;
+          pruferSeq.push(nb); removed[leaf] = 1; deg2[nb]--;
+        }
+      }
+
       return {
         isTree, isRegular, regularDeg: isRegular ? degrees[0] : null,
-        triangles, quadrangles, girth,
-        m1, m2,
+        triangles, quadrangles, girth, pruferSeq, spanningTrees,
+        m1, m2, forgotten,
         randic: +randic.toFixed(4), harmonic: +harmonic.toFixed(4), albertson,
-        wiener, harary, degDist, gutman, radius,
-        adjSpectrum, energy, spectralRadius, lapSpectrum, fiedler, lel,
+        ga: +ga.toFixed(4), sumConn: +sumConn.toFixed(4), azi: +azi.toFixed(4),
+        chromaticIndex,
+        wiener, harary, hyperWiener, avgDist, degDist, gutman,
+        mostar, szeged, piIndex,
+        radius, totalEcc, avgEcc, eccConn, connEcc,
+        adjSpectrum, energy, spectralRadius, estrada,
+        lapSpectrum, fiedler, lel, slSpectrum, slEnergy,
         matchingSize, hamiltonianCycle, hamiltonianPath,
         distComputed: distMatrix !== null,
       };
@@ -1012,9 +1091,11 @@
               ${row('Density',  `<span class="val">${(a.density*100).toFixed(1)}%</span>`)}
               ${row('Is tree',  bool(a.isTree))}
               ${row('Regular',  a.isRegular ? `<span class="val yes">Yes (k=${a.regularDeg})</span>` : '<span class="val no">No</span>')}
+              ${a.spanningTrees !== null ? row('Spanning trees', `<span class="val">${a.spanningTrees}</span>`) : ''}
               ${row('Triangles', `<span class="val">${a.triangles}</span>`)}
               ${a.quadrangles !== null ? row('Quadrangles (C₄)', `<span class="val">${a.quadrangles}</span>`) : ''}
               ${a.girth !== null ? row('Girth', a.girth === -1 ? '<span class="val na">∞ (acyclic)</span>' : `<span class="val">${a.girth}</span>`) : ''}
+              ${a.pruferSeq ? row('Prüfer seq.', `<span class="val" style="font-size:0.72rem">[${a.pruferSeq.join(', ')}]</span>`) : ''}
             </div>
           </details>
 
@@ -1050,11 +1131,15 @@
           <details>
             <summary>Degree Indices</summary>
             <div class="section-body">
-              ${row('Zagreb M₁',  `<span class="val">${a.m1}</span>`)}
-              ${row('Zagreb M₂',  `<span class="val">${a.m2}</span>`)}
-              ${row('Randić',     `<span class="val">${a.randic}</span>`)}
-              ${row('Harmonic',   `<span class="val">${a.harmonic}</span>`)}
-              ${row('Albertson',  `<span class="val">${a.albertson}</span>`)}
+              ${row('Zagreb M₁',   `<span class="val">${a.m1}</span>`)}
+              ${row('Zagreb M₂',   `<span class="val">${a.m2}</span>`)}
+              ${row('Forgotten F', `<span class="val">${a.forgotten}</span>`)}
+              ${row('Randić',      `<span class="val">${a.randic}</span>`)}
+              ${row('Harmonic',    `<span class="val">${a.harmonic}</span>`)}
+              ${row('Geo.-Arith.', `<span class="val">${a.ga}</span>`)}
+              ${row('Sum Conn.',   `<span class="val">${a.sumConn}</span>`)}
+              ${row('Aug. Zagreb', `<span class="val">${a.azi}</span>`)}
+              ${row('Albertson',   `<span class="val">${a.albertson}</span>`)}
             </div>
           </details>
 
@@ -1062,10 +1147,27 @@
             <summary>Distance Indices</summary>
             <div class="section-body">
               ${a.distComputed ? `
-                ${row('Wiener',          `<span class="val">${a.wiener}</span>`)}
-                ${row('Harary',          `<span class="val">${a.harary}</span>`)}
-                ${row('Degree Distance', `<span class="val">${a.degDist}</span>`)}
-                ${row('Gutman',          `<span class="val">${a.gutman}</span>`)}
+                ${row('Wiener',         `<span class="val">${a.wiener}</span>`)}
+                ${row('Hyper-Wiener',   `<span class="val">${a.hyperWiener}</span>`)}
+                ${row('Avg. distance',  `<span class="val">${a.avgDist}</span>`)}
+                ${row('Harary',         `<span class="val">${a.harary}</span>`)}
+                ${row('Deg. Distance',  `<span class="val">${a.degDist}</span>`)}
+                ${row('Gutman',         `<span class="val">${a.gutman}</span>`)}
+                ${a.mostar  !== null ? row('Mostar',  `<span class="val">${a.mostar}</span>`)  : ''}
+                ${a.szeged  !== null ? row('Szeged',  `<span class="val">${a.szeged}</span>`)  : ''}
+                ${a.piIndex !== null ? row('PI',      `<span class="val">${a.piIndex}</span>`) : ''}
+              ` : '<div class="a-row"><span class="lbl" style="color:#666;font-style:italic">N/A (disconnected or n&gt;300)</span></div>'}
+            </div>
+          </details>
+
+          <details>
+            <summary>Eccentricity Indices</summary>
+            <div class="section-body">
+              ${a.totalEcc !== null ? `
+                ${row('Total eccentricity', `<span class="val">${a.totalEcc}</span>`)}
+                ${row('Avg. eccentricity',  `<span class="val">${a.avgEcc}</span>`)}
+                ${row('Eccentric conn.',    `<span class="val">${a.eccConn}</span>`)}
+                ${row('Conn. eccentric',    `<span class="val">${a.connEcc}</span>`)}
               ` : '<div class="a-row"><span class="lbl" style="color:#666;font-style:italic">N/A (disconnected or n&gt;300)</span></div>'}
             </div>
           </details>
@@ -1074,12 +1176,15 @@
             <summary>Spectral <small style="color:#555;text-transform:none;font-weight:400;letter-spacing:0">(n≤20)</small></summary>
             <div class="section-body">
               ${a.adjSpectrum ? `
-                ${row('Spectral radius', `<span class="val">${a.spectralRadius}</span>`)}
-                ${row('Energy',          `<span class="val">${a.energy}</span>`)}
+                ${row('Spectral radius',   `<span class="val">${a.spectralRadius}</span>`)}
+                ${row('Energy',            `<span class="val">${a.energy}</span>`)}
+                ${row('Estrada index',     `<span class="val">${a.estrada}</span>`)}
                 <div class="deg-seq">λ: [${a.adjSpectrum.join(', ')}]</div>
-                ${row('Fiedler value',   `<span class="val">${a.fiedler}</span>`)}
+                ${row('Fiedler value',     `<span class="val">${a.fiedler}</span>`)}
                 ${row('Lap. energy (LEL)', `<span class="val">${a.lel}</span>`)}
                 <div class="deg-seq">μ: [${a.lapSpectrum.join(', ')}]</div>
+                ${row('SL energy',         `<span class="val">${a.slEnergy}</span>`)}
+                <div class="deg-seq">q: [${a.slSpectrum.join(', ')}]</div>
               ` : '<div class="a-row"><span class="val na">N/A (n &gt; 20)</span></div>'}
             </div>
           </details>
@@ -1089,6 +1194,7 @@
             <div class="section-body">
               ${row('Max matching',         `<span class="val">${a.matchingSize}</span>`)}
               ${row('Chromatic # (greedy)', `<span class="val">${a.chromatic_number_greedy}</span>`)}
+              ${row('Chromatic index',      `<span class="val">${a.chromaticIndex}</span>`)}
             </div>
           </details>
 
