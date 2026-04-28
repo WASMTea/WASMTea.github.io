@@ -20,11 +20,12 @@
     header {
       display: flex;
       align-items: center;
-      gap: 1.5rem;
+      gap: 0.8rem;
       padding: 0.6rem 1.2rem;
       background: #16213e;
       border-bottom: 1px solid #0f3460;
       flex-shrink: 0;
+      flex-wrap: wrap;
     }
 
     header h1 { font-size: 1rem; font-weight: 600; color: #e94560; }
@@ -43,9 +44,24 @@
     }
     .tool-btn:hover  { background: #1a4a8a; color: #fff; }
     .tool-btn.active { background: #e94560; border-color: #e94560; color: #fff; }
+    .tool-btn.on     { background: #4a9eff; border-color: #4a9eff; color: #fff; }
 
-    #hint  { margin-left: auto; font-size: 0.75rem; color: #666; }
-    #stats { font-size: 0.75rem; color: #555; }
+    .mode-badge {
+      padding: 0.2rem 0.55rem;
+      border-radius: 3px;
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      background: #0f3460;
+      color: #4a9eff;
+      border: 1px solid #1a4a8a;
+      white-space: nowrap;
+    }
+    .mode-badge.large { background: #1a2e1a; color: #4caf50; border-color: #2a4a2a; }
+
+    #hint  { margin-left: auto; font-size: 0.75rem; color: #555; }
+    #stats { font-size: 0.75rem; color: #555; white-space: nowrap; }
 
     /* ── I/O group ─────────────────────────────────────────────────────────── */
     .io-group { position: relative; display: flex; gap: 0.3rem; }
@@ -73,14 +89,15 @@
     }
     .io-opt:hover { background: #1a4a8a; color: #fff; }
 
-    /* ── main area ─────────────────────────────────────────────────────── */
+    /* ── main area ─────────────────────────────────────────────────────────── */
     .main {
       display: flex;
       flex: 1;
       overflow: hidden;
     }
 
-    .canvas-wrap {
+    /* ── canvas renderer ───────────────────────────────────────────────────── */
+    #canvas-wrap {
       flex: 1;
       position: relative;
       overflow: hidden;
@@ -93,7 +110,22 @@
       cursor: crosshair;
     }
 
-    /* ── sidebar ───────────────────────────────────────────────────────── */
+    /* ── vivagraph renderer ────────────────────────────────────────────────── */
+    #graph-container {
+      display: none;
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      min-width: 0;
+      background: #1a1a2e;
+    }
+
+    #graph-container > * {
+      position: absolute !important;
+      top: 0 !important; left: 0 !important;
+    }
+
+    /* ── sidebar ───────────────────────────────────────────────────────────── */
     #sidebar {
       width: 260px;
       flex-shrink: 0;
@@ -238,20 +270,7 @@
       padding: 0.6rem 0.9rem;
     }
 
-    .section {
-      margin-bottom: 1rem;
-    }
-
-    .section-title {
-      font-size: 0.65rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: #4a9eff;
-      margin-bottom: 0.4rem;
-      padding-bottom: 0.2rem;
-      border-bottom: 1px solid #0f3460;
-    }
+    .section { margin-bottom: 1rem; }
 
     .row {
       display: flex;
@@ -260,7 +279,6 @@
       padding: 0.18rem 0;
       font-size: 0.78rem;
     }
-
     .row .lbl { color: #888; }
     .row .val { color: #eee; font-variant-numeric: tabular-nums; }
     .val.yes  { color: #4caf50; }
@@ -314,10 +332,12 @@
     <h1>Graph Editor</h1>
     <div class="toolbar">
       <button class="tool-btn active" id="btn-vertex" title="Click canvas to add vertex">Vertex</button>
-      <button class="tool-btn" id="btn-edge"   title="Drag from one vertex to another">Edge</button>
-      <button class="tool-btn" id="btn-move"   title="Drag vertex to move it">Move</button>
+      <button class="tool-btn" id="btn-edge"   title="Drag from vertex to vertex">Edge</button>
+      <button class="tool-btn" id="btn-move"   title="Drag a vertex to move it">Move</button>
       <button class="tool-btn" id="btn-delete" title="Click vertex or edge to delete">Delete</button>
     </div>
+    <button class="tool-btn on" id="btn-sim" style="display:none">Pause</button>
+    <span class="mode-badge" id="mode-badge">Canvas</span>
     <span id="stats">0 vertices · 0 edges</span>
     <div class="io-group">
       <button class="tool-btn" id="btn-save">Save ▾</button>
@@ -336,9 +356,11 @@
   </header>
 
   <div class="main">
-    <div class="canvas-wrap">
+    <div id="canvas-wrap">
       <canvas id="canvas"></canvas>
     </div>
+
+    <div id="graph-container"></div>
 
     <aside id="sidebar">
       <div class="sidebar-tabs">
@@ -366,6 +388,7 @@
     </aside>
   </div>
 
+  <script src="js/vivagraph.min.js"></script>
   <script type="module">
     import init, { Graph } from './graph/pkg/graph_editor.js';
     import { computeExtendedMetrics } from './js/reports.js';
@@ -373,19 +396,86 @@
     import { FORMATS, serialize, deserialize, triggerDownload } from './js/io.js';
     await init();
 
-    // ── canvas setup ─────────────────────────────────────────────────────────
-    const canvas = document.getElementById('canvas');
-    const ctx    = canvas.getContext('2d');
+    // ── thresholds for auto-switching renderer ────────────────────────────────
+    const LARGE_N = 200;   // vertices
+    const LARGE_E = 600;   // edges
 
-    // ── state ─────────────────────────────────────────────────────────────────
+    function isLarge(n, edgeCount) {
+      return n > LARGE_N || edgeCount > LARGE_E;
+    }
+
+    // ── canvas setup ──────────────────────────────────────────────────────────
+    const canvas  = document.getElementById('canvas');
+    const ctx     = canvas.getContext('2d');
+    const canvasWrap = document.getElementById('canvas-wrap');
+
+    // ── WASM graph (canvas mode) ──────────────────────────────────────────────
     const graph = new Graph();
     const R     = Graph.vertex_radius();
 
+    // ── VivaGraph state (large mode) ─────────────────────────────────────────
+    let vivaGraph  = null;
+    let renderer   = null;
+    let vivaLayout = null;
+    let graphics   = null;
+    let nextId     = 0;
+    let edgeSource = null;
+    const container = document.getElementById('graph-container');
+
+    // ── render mode ───────────────────────────────────────────────────────────
+    let currentMode = 'canvas'; // 'canvas' | 'vivagraph'
+
+    function switchToCanvas() {
+      if (currentMode === 'canvas') return;
+      currentMode = 'canvas';
+      canvasWrap.style.display = '';
+      container.style.display  = 'none';
+      modeBadge.textContent = 'Canvas';
+      modeBadge.classList.remove('large');
+      btnMove.style.display = '';
+      btnSim.style.display  = 'none';
+      hintEl.textContent = hints[mode] ?? hints.vertex;
+      updateStats();
+      render();
+    }
+
+    function switchToVivagraph() {
+      if (currentMode === 'vivagraph') return;
+      currentMode = 'vivagraph';
+      canvasWrap.style.display = 'none';
+      container.style.display  = '';
+      modeBadge.textContent = 'Force-directed';
+      modeBadge.classList.add('large');
+      btnMove.style.display = 'none';  // physics drives movement
+      btnSim.style.display  = '';
+      edgeDrag = moveDrag = null;
+      edgeSource = null;
+      hintEl.textContent = hints[mode] ?? hints.vertex;
+      updateStats();
+    }
+
+    // ── element references ─────────────────────────────────────────────────────
+    const statsEl   = document.getElementById('stats');
+    const hintEl    = document.getElementById('hint');
+    const modeBadge = document.getElementById('mode-badge');
+    const btnMove   = document.getElementById('btn-move');
+    const btnSim    = document.getElementById('btn-sim');
+
+    function updateStats() {
+      if (currentMode === 'canvas') {
+        statsEl.textContent = `${graph.vertex_count()} vertices · ${graph.edge_count()} edges`;
+      } else {
+        if (!vivaGraph) { statsEl.textContent = '0 vertices · 0 edges'; return; }
+        statsEl.textContent =
+          `${vivaGraph.getNodesCount()} vertices · ${vivaGraph.getLinksCount()} edges`;
+      }
+    }
+
+    // ── toolbar ───────────────────────────────────────────────────────────────
     let mode     = 'vertex';
     let edgeDrag = null;
     let moveDrag = null;
 
-    // ── tool buttons ──────────────────────────────────────────────────────────
     const hints = {
       vertex: 'Click empty canvas to add a vertex',
       edge:   'Drag from a vertex to another to add an edge',
@@ -393,37 +483,38 @@
       delete: 'Click a vertex or edge to delete it',
     };
 
-    const hintEl  = document.getElementById('hint');
-    const statsEl = document.getElementById('stats');
-
-    document.querySelectorAll('.tool-btn').forEach(btn => {
+    document.querySelectorAll('.tool-btn[id^="btn-"]').forEach(btn => {
+      const toolId = btn.id.replace('btn-', '');
+      if (!hints[toolId]) return;
       btn.addEventListener('click', () => {
-        mode = btn.id.replace('btn-', '');
-        document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+        mode = toolId;
+        document.querySelectorAll('.tool-btn[id^="btn-"]').forEach(b => {
+          if (hints[b.id.replace('btn-', '')]) b.classList.remove('active');
+        });
         btn.classList.add('active');
         hintEl.textContent = hints[mode];
-        canvas.style.cursor = mode === 'vertex' ? 'crosshair'
-                            : mode === 'move'   ? 'grab'
-                            : 'pointer';
+        if (currentMode === 'canvas') {
+          canvas.style.cursor = mode === 'vertex' ? 'crosshair'
+                              : mode === 'move'   ? 'grab'
+                              : 'pointer';
+        }
         edgeDrag = moveDrag = null;
+        edgeSource = null;
         render();
       });
     });
 
-    function updateStats() {
-      statsEl.textContent = `${graph.vertex_count()} vertices · ${graph.edge_count()} edges`;
-    }
-
-    // ── rendering ─────────────────────────────────────────────────────────────
+    // ── canvas rendering ──────────────────────────────────────────────────────
     const COLORS = {
-      vertex:      '#e94560',
-      vertexStroke:'#ff6b8a',
-      edgeLine:    '#4a9eff',
-      edgeDrag:    'rgba(74,158,255,0.5)',
-      label:       '#fff',
+      vertex:       '#e94560',
+      vertexStroke: '#ff6b8a',
+      edgeLine:     '#4a9eff',
+      edgeDrag:     'rgba(74,158,255,0.5)',
+      label:        '#fff',
     };
 
     function render() {
+      if (currentMode !== 'canvas') return;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       const vertices = JSON.parse(graph.vertices_json());
@@ -431,7 +522,6 @@
       const vmap = {};
       vertices.forEach(v => { vmap[v.id] = v; });
 
-      // edges
       ctx.lineWidth = 2; ctx.strokeStyle = COLORS.edgeLine; ctx.lineCap = 'round';
       edges.forEach(e => {
         const a = vmap[e.from], b = vmap[e.to];
@@ -439,17 +529,16 @@
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       });
 
-      // drag-edge preview
       if (edgeDrag) {
         const src = vmap[edgeDrag.fromId];
         if (src) {
           ctx.lineWidth = 2; ctx.strokeStyle = COLORS.edgeDrag; ctx.setLineDash([6, 4]);
-          ctx.beginPath(); ctx.moveTo(src.x, src.y); ctx.lineTo(edgeDrag.curX, edgeDrag.curY); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(src.x, src.y);
+          ctx.lineTo(edgeDrag.curX, edgeDrag.curY); ctx.stroke();
           ctx.setLineDash([]);
         }
       }
 
-      // vertices
       vertices.forEach(v => {
         ctx.beginPath(); ctx.arc(v.x, v.y, R, 0, Math.PI * 2);
         ctx.fillStyle = COLORS.vertex; ctx.fill();
@@ -461,7 +550,7 @@
       });
     }
 
-    // ── mouse helpers ─────────────────────────────────────────────────────────
+    // ── canvas mouse helpers ───────────────────────────────────────────────────
     function canvasPos(e) {
       const rect = canvas.getBoundingClientRect();
       return { x: e.clientX - rect.left, y: e.clientY - rect.top };
@@ -483,24 +572,22 @@
       return -1;
     }
 
-    // ── mouse events ──────────────────────────────────────────────────────────
+    // ── canvas mouse events ───────────────────────────────────────────────────
     canvas.addEventListener('mousedown', e => {
+      if (currentMode !== 'canvas') return;
       const { x, y } = canvasPos(e);
       const vid = graph.vertex_at(x, y);
 
       if (mode === 'vertex') {
         if (vid === -1) { graph.add_vertex(x, y); updateStats(); render(); }
-
       } else if (mode === 'edge') {
         if (vid !== -1) edgeDrag = { fromId: vid, curX: x, curY: y };
-
       } else if (mode === 'move') {
         if (vid !== -1) {
           const v = JSON.parse(graph.vertices_json()).find(v => v.id === vid);
           moveDrag = { id: vid, offsetX: x - v.x, offsetY: y - v.y };
           canvas.style.cursor = 'grabbing';
         }
-
       } else if (mode === 'delete') {
         if (vid !== -1) {
           graph.delete_vertex(vid); updateStats(); render();
@@ -514,16 +601,20 @@
     });
 
     canvas.addEventListener('mousemove', e => {
+      if (currentMode !== 'canvas') return;
       const { x, y } = canvasPos(e);
       if (edgeDrag) { edgeDrag.curX = x; edgeDrag.curY = y; render(); }
       if (moveDrag) { graph.move_vertex(moveDrag.id, x - moveDrag.offsetX, y - moveDrag.offsetY); render(); }
     });
 
     canvas.addEventListener('mouseup', e => {
+      if (currentMode !== 'canvas') return;
       const { x, y } = canvasPos(e);
       if (edgeDrag) {
         const toId = graph.vertex_at(x, y);
-        if (toId !== -1 && toId !== edgeDrag.fromId) { graph.add_edge(edgeDrag.fromId, toId); updateStats(); }
+        if (toId !== -1 && toId !== edgeDrag.fromId) {
+          graph.add_edge(edgeDrag.fromId, toId); updateStats();
+        }
         edgeDrag = null; render();
       }
       if (moveDrag) { moveDrag = null; canvas.style.cursor = 'grab'; }
@@ -531,95 +622,84 @@
 
     canvas.addEventListener('mouseleave', () => {
       if (edgeDrag) { edgeDrag = null; render(); }
-      if (moveDrag)   moveDrag = null;
+      if (moveDrag) moveDrag = null;
     });
 
-    // ── sidebar tabs ──────────────────────────────────────────────────────────
-    document.querySelectorAll('.tab-btn').forEach(btn => {
-      btn.addEventListener('click', () => {
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        const target = btn.dataset.tab;
-        document.getElementById('tab-generate').hidden = target !== 'generate';
-        document.getElementById('tab-analyze').hidden  = target !== 'analyze';
+    // ── VivaGraph renderer ────────────────────────────────────────────────────
+    let vivaRunning = true;
+
+    function buildRenderer(g) {
+      if (renderer) { renderer.dispose(); renderer = null; }
+      container.innerHTML = '';
+
+      vivaGraph = g;
+      nextId    = g.getNodesCount();
+
+      graphics = Viva.Graph.View.webglGraphics();
+      graphics.node(() => Viva.Graph.View.webglSquare(10, '#e94560'));
+      graphics.link(() => Viva.Graph.View.webglLine('#4a9eff'));
+
+      vivaLayout = Viva.Graph.Layout.forceDirected(vivaGraph, {
+        springLength: 80,
+        springCoeff:  0.0008,
+        gravity:      -1.2,
+        dragCoeff:    0.02,
+        theta:        0.8,
       });
-    });
 
-    // ── save / load ───────────────────────────────────────────────────────────
-    function graphData() {
-      const vertices = JSON.parse(graph.vertices_json());
-      const edges    = JSON.parse(graph.edges_json());
-      const n = vertices.length;
-      const idxOf = new Map(vertices.map((v, i) => [v.id, i]));
-      return {
-        n,
-        edges:    edges.map(e => [idxOf.get(e.from), idxOf.get(e.to)]),
-        vertices: vertices.map(v => ({ x: v.x, y: v.y, label: v.label })),
-      };
-    }
-
-    function applyLoaded(data) {
-      JSON.parse(graph.vertices_json()).forEach(v => graph.delete_vertex(v.id));
-      const hasPos = data.vertices?.some(v => v.x != null);
-      const cx = canvas.width / 2, cy = canvas.height / 2;
-      const r  = Math.min(canvas.width, canvas.height) * 0.38;
-      const positions = hasPos
-        ? data.vertices.map(v => [v.x ?? 0, v.y ?? 0])
-        : circlePos(data.n, cx, cy, r);
-      const ids = positions.map(([x, y]) => graph.add_vertex(x, y));
-      data.edges.forEach(([u, v]) => {
-        if (u != null && v != null && u < ids.length && v < ids.length)
-          graph.add_edge(ids[u], ids[v]);
+      renderer = Viva.Graph.View.renderer(vivaGraph, {
+        graphics,
+        layout:      vivaLayout,
+        container,
+        renderLinks: true,
       });
-      updateStats(); render();
-    }
 
-    const saveMenu  = document.getElementById('save-menu');
-    const fileInput = document.getElementById('file-input');
+      renderer.run();
+      if (!vivaRunning) renderer.pause();
 
-    document.getElementById('btn-save').addEventListener('click', e => {
-      saveMenu.classList.toggle('open');
-      e.stopPropagation();
-    });
-
-    saveMenu.addEventListener('click', e => {
-      const opt = e.target.closest('.io-opt');
-      if (!opt) return;
-      const fmt = FORMATS.find(f => f.id === opt.dataset.fmt);
-      if (!fmt) return;
-      const text = serialize(graphData(), fmt.id);
-      triggerDownload(text, `graph${fmt.ext}`, fmt.mime);
-      saveMenu.classList.remove('open');
-    });
-
-    document.getElementById('btn-load').addEventListener('click', () => fileInput.click());
-
-    fileInput.addEventListener('change', () => {
-      const file = fileInput.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = ev => {
-        try {
-          const data = deserialize(ev.target.result, file.name);
-          applyLoaded(data);
-        } catch (err) {
-          alert(`Load failed: ${err.message}`);
+      const nodeEvents = Viva.Graph.webglInputEvents(graphics, vivaGraph);
+      nodeEvents.click(node => {
+        if (mode === 'delete') {
+          vivaGraph.removeNode(node.id);
+          updateStats();
+        } else if (mode === 'edge') {
+          if (edgeSource === null) {
+            edgeSource = node.id;
+            hintEl.textContent = `Source: ${node.id} — now click the target vertex`;
+          } else {
+            if (edgeSource !== node.id && !vivaGraph.hasLink(edgeSource, node.id)) {
+              vivaGraph.addLink(edgeSource, node.id);
+              updateStats();
+            }
+            edgeSource = null;
+            hintEl.textContent = hints.edge;
+          }
         }
-      };
-      reader.readAsText(file);
-      fileInput.value = '';
+      });
+
+      updateStats();
+    }
+
+    // Click on empty vivagraph area to add a vertex
+    container.addEventListener('click', () => {
+      if (currentMode !== 'vivagraph' || mode !== 'vertex' || !vivaGraph) return;
+      vivaGraph.addNode(nextId++);
+      updateStats();
     });
 
-    document.addEventListener('click', () => saveMenu.classList.remove('open'));
+    // Pause / Resume vivagraph simulation
+    btnSim.addEventListener('click', function() {
+      vivaRunning = !vivaRunning;
+      this.textContent = vivaRunning ? 'Pause' : 'Resume';
+      this.classList.toggle('on', vivaRunning);
+      if (renderer) vivaRunning ? renderer.resume() : renderer.pause();
+    });
 
-    // ── graph generators ──────────────────────────────────────────────────────
-    let selectedGen = null;
-
-    // Layout helpers
+    // ── generator: layout helpers ────────────────────────────────────────────
     function circlePos(n, cx, cy, r) {
       return Array.from({length: n}, (_, i) => {
-        const a = (2*Math.PI*i/n) - Math.PI/2;
-        return [cx + r*Math.cos(a), cy + r*Math.sin(a)];
+        const a = (2 * Math.PI * i / n) - Math.PI / 2;
+        return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
       });
     }
 
@@ -631,7 +711,6 @@
         if (n === 1) return [[cx, cy]];
         return Array.from({length: n}, (_, i) => [cx - r*0.9 + (i/(n-1))*r*1.8, cy]);
       }
-
       if (layout === 'star' || layout === 'wheel') {
         const nRim = n - 1;
         const pos = [[cx, cy]];
@@ -641,7 +720,6 @@
         }
         return pos;
       }
-
       if (layout === 'two-circle') {
         const half = Math.floor(n/2);
         const pos = [];
@@ -656,7 +734,6 @@
         }
         return pos;
       }
-
       if (layout === 'grotzsch') {
         const pos = [];
         for (let i = 0; i < 5; i++) {
@@ -670,7 +747,6 @@
         pos.push([cx, cy]);
         return pos;
       }
-
       if (layout === 'bipartite') {
         const leftN = params.m !== undefined ? params.m : params.n;
         const rightN = n - leftN;
@@ -678,23 +754,21 @@
         const gap = Math.min(r*0.7, 100);
         const lSp = leftN  > 1 ? Math.min(r*1.6/(leftN -1), 50) : 0;
         const rSp = rightN > 1 ? Math.min(r*1.6/(rightN-1), 50) : 0;
-        for (let i = 0; i < leftN;  i++) pos.push([cx - gap, cy + (i - (leftN -1)/2)*lSp]);
-        for (let i = 0; i < rightN; i++) pos.push([cx + gap, cy + (i - (rightN-1)/2)*rSp]);
+        for (let i = 0; i < leftN;  i++) pos.push([cx - gap, cy + (i-(leftN -1)/2)*lSp]);
+        for (let i = 0; i < rightN; i++) pos.push([cx + gap, cy + (i-(rightN-1)/2)*rSp]);
         return pos;
       }
-
       if (layout === 'tripartite') {
         const {m, n: nn, o} = params;
         const pos = [];
         const gap = Math.min(r*0.62, 90);
         function colPos(count, xOff) {
           const sp = count > 1 ? Math.min(r*1.6/(count-1), 50) : 0;
-          for (let i = 0; i < count; i++) pos.push([cx + xOff, cy + (i - (count-1)/2)*sp]);
+          for (let i = 0; i < count; i++) pos.push([cx + xOff, cy + (i-(count-1)/2)*sp]);
         }
         colPos(m, -gap); colPos(nn, 0); colPos(o, gap);
         return pos;
       }
-
       if (layout === 'grid') {
         const rows = params.m, cols = params.n;
         const sp = Math.min(r*1.7/Math.max(rows-1, cols-1, 1), 45);
@@ -704,7 +778,6 @@
             pos.push([cx + (col-(cols-1)/2)*sp, cy + (row-(rows-1)/2)*sp]);
         return pos;
       }
-
       if (layout === 'helm') {
         const nRim = params.n;
         const pos = [[cx, cy]];
@@ -718,7 +791,6 @@
         }
         return pos;
       }
-
       if (layout === 'sunlet') {
         const nC = params.n;
         const pos = [];
@@ -732,14 +804,12 @@
         }
         return pos;
       }
-
       if (layout === 'tadpole') {
         const cycleN = params.n, tailK = params.k;
         const pos = [];
-        const cR = r * 0.55;
-        const cX = cx - r * 0.22;
+        const cR = r * 0.55, cX = cx - r * 0.22;
         for (let i = 0; i < cycleN; i++) {
-          const a = 2*Math.PI*i/cycleN; // vertex 0 at right (a=0)
+          const a = 2*Math.PI*i/cycleN;
           pos.push([cX + cR*Math.cos(a), cy + cR*Math.sin(a)]);
         }
         const startX = cX + cR;
@@ -747,7 +817,6 @@
         for (let i = 0; i < tailK; i++) pos.push([startX + (i+1)*sp, cy]);
         return pos;
       }
-
       if (layout === 'tree') {
         if (n === 1) return [[cx, cy]];
         const adj = Array.from({length: n}, () => []);
@@ -759,7 +828,7 @@
           const v = q[h];
           for (const u of adj[v]) {
             if (depth[u] === -1) {
-              depth[u] = depth[v]+1;
+              depth[u] = depth[v] + 1;
               while (byDepth.length <= depth[u]) byDepth.push([]);
               byDepth[depth[u]].push(u);
               q.push(u);
@@ -776,31 +845,131 @@
         });
         return pos;
       }
-
-      // Default: circle
       return circlePos(n, cx, cy, r);
+    }
+
+    // ── apply generators ──────────────────────────────────────────────────────
+    function applyCanvas(gen, params, result) {
+      switchToCanvas();
+      const cx = canvas.width / 2, cy = canvas.height / 2;
+      const r  = Math.min(canvas.width, canvas.height) * 0.38;
+      const positions = computePositions(gen, params, result, cx, cy, r);
+      JSON.parse(graph.vertices_json()).forEach(v => graph.delete_vertex(v.id));
+      const ids = positions.map(([x, y]) => graph.add_vertex(x, y));
+      result.edges.forEach(([u, v]) => graph.add_edge(ids[u], ids[v]));
+      updateStats(); render();
+    }
+
+    function applyVivagraph(data) {
+      switchToVivagraph();
+      const g = Viva.Graph.graph();
+      for (let i = 0; i < data.n; i++) g.addNode(i);
+      data.edges.forEach(([u, v]) => g.addLink(u, v));
+      buildRenderer(g);
     }
 
     function applyGenerator(gen, params) {
       const result = gen.build(params);
-      const cx = canvas.width / 2, cy = canvas.height / 2;
-      const r  = Math.min(canvas.width, canvas.height) * 0.38;
-      const positions = computePositions(gen, params, result, cx, cy, r);
-
-      // Clear existing graph
-      JSON.parse(graph.vertices_json()).forEach(v => graph.delete_vertex(v.id));
-
-      // Add vertices and edges
-      const ids = positions.map(([x, y]) => graph.add_vertex(x, y));
-      result.edges.forEach(([u, v]) => graph.add_edge(ids[u], ids[v]));
-
-      updateStats();
-      render();
+      if (isLarge(result.n, result.edges.length)) {
+        applyVivagraph(result);
+      } else {
+        applyCanvas(gen, params, result);
+      }
     }
 
+    // ── save / load ───────────────────────────────────────────────────────────
+    function graphData() {
+      if (currentMode === 'canvas') {
+        const vertices = JSON.parse(graph.vertices_json());
+        const edges    = JSON.parse(graph.edges_json());
+        const idxOf    = new Map(vertices.map((v, i) => [v.id, i]));
+        return {
+          n:        vertices.length,
+          edges:    edges.map(e => [idxOf.get(e.from), idxOf.get(e.to)]),
+          vertices: vertices.map(v => ({ x: v.x, y: v.y, label: v.label })),
+        };
+      } else {
+        if (!vivaGraph) return { n: 0, edges: [] };
+        const ids = []; const idxOf = new Map();
+        vivaGraph.forEachNode(node => { idxOf.set(node.id, ids.length); ids.push(node.id); });
+        const edges = [];
+        vivaGraph.forEachLink(link => {
+          const u = idxOf.get(link.fromId), v = idxOf.get(link.toId);
+          if (u !== undefined && v !== undefined) edges.push([u, v]);
+        });
+        return { n: ids.length, edges };
+      }
+    }
+
+    function applyLoaded(data) {
+      if (isLarge(data.n, data.edges.length)) {
+        applyVivagraph(data);
+      } else {
+        switchToCanvas();
+        JSON.parse(graph.vertices_json()).forEach(v => graph.delete_vertex(v.id));
+        const hasPos = data.vertices?.some(v => v.x != null);
+        const cx = canvas.width / 2, cy = canvas.height / 2;
+        const r  = Math.min(canvas.width, canvas.height) * 0.38;
+        const positions = hasPos
+          ? data.vertices.map(v => [v.x ?? 0, v.y ?? 0])
+          : circlePos(data.n, cx, cy, r);
+        const ids = positions.map(([x, y]) => graph.add_vertex(x, y));
+        data.edges.forEach(([u, v]) => {
+          if (u != null && v != null && u < ids.length && v < ids.length)
+            graph.add_edge(ids[u], ids[v]);
+        });
+        updateStats(); render();
+      }
+    }
+
+    const saveMenu  = document.getElementById('save-menu');
+    const fileInput = document.getElementById('file-input');
+
+    document.getElementById('btn-save').addEventListener('click', e => {
+      saveMenu.classList.toggle('open'); e.stopPropagation();
+    });
+
+    saveMenu.addEventListener('click', e => {
+      const opt = e.target.closest('.io-opt');
+      if (!opt) return;
+      const fmt = FORMATS.find(f => f.id === opt.dataset.fmt);
+      if (!fmt) return;
+      triggerDownload(serialize(graphData(), fmt.id), `graph${fmt.ext}`, fmt.mime);
+      saveMenu.classList.remove('open');
+    });
+
+    document.getElementById('btn-load').addEventListener('click', () => fileInput.click());
+
+    fileInput.addEventListener('change', () => {
+      const file = fileInput.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => {
+        try { applyLoaded(deserialize(ev.target.result, file.name)); }
+        catch (err) { alert(`Load failed: ${err.message}`); }
+      };
+      reader.readAsText(file);
+      fileInput.value = '';
+    });
+
+    document.addEventListener('click', () => saveMenu.classList.remove('open'));
+
+    // ── sidebar tabs ──────────────────────────────────────────────────────────
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const t = btn.dataset.tab;
+        document.getElementById('tab-generate').hidden = t !== 'generate';
+        document.getElementById('tab-analyze').hidden  = t !== 'analyze';
+      });
+    });
+
+    // ── generator UI ──────────────────────────────────────────────────────────
+    let selectedGen = null;
+
     function buildParamUI(gen) {
-      const paramsEl = document.getElementById('gen-params');
-      paramsEl.innerHTML = gen.params.map(p => `
+      document.getElementById('gen-params').innerHTML = gen.params.map(p => `
         <div class="param-row">
           <label>${p.label} =</label>
           <input type="number" id="param-${p.id}"
@@ -821,7 +990,6 @@
       buildParamUI(gen);
     }
 
-    // Build category HTML
     const catEl = document.getElementById('gen-categories');
     catEl.innerHTML = CATEGORIES.map(cat => `
       <details ${cat.open ? 'open' : ''}>
@@ -850,89 +1018,180 @@
 
     selectGenerator('complete');
 
-    // ── analysis sidebar ──────────────────────────────────────────────────────
-    const analyzeBtn  = document.getElementById('btn-analyze');
-    const scrollEl    = document.getElementById('analysis-scroll');
+    // ── analysis ──────────────────────────────────────────────────────────────
 
-    function bool(v) {
-      return v ? '<span class="val yes">Yes</span>' : '<span class="val no">No</span>';
-    }
-    function naV(ok, val) {
-      return ok ? `<span class="val">${val}</span>` : '<span class="val na">N/A</span>';
-    }
-    function row(label, valueHtml) {
-      return `<div class="row"><span class="lbl">${label}</span>${valueHtml}</div>`;
+    // JS-based analysis for vivagraph mode (mirrors Rust algorithms)
+    function analyzeGraph(g) {
+      const n = g.getNodesCount(), m = g.getLinksCount();
+      if (n === 0) return null;
+      const ids = []; const idxOf = new Map();
+      g.forEachNode(node => { idxOf.set(node.id, ids.length); ids.push(node.id); });
+      const adj = Array.from({length: n}, () => []);
+      g.forEachLink(link => {
+        const i = idxOf.get(link.fromId), j = idxOf.get(link.toId);
+        if (i !== undefined && j !== undefined) { adj[i].push(j); adj[j].push(i); }
+      });
+      const degrees = adj.map(a => a.length);
+      const degSeq  = [...degrees].sort((a, b) => b - a);
+      function bfs(start) {
+        const dist = new Int32Array(n).fill(-1);
+        dist[start] = 0;
+        const q = [start];
+        for (let h = 0; h < q.length; h++) {
+          const v = q[h];
+          for (const u of adj[v]) if (dist[u] === -1) { dist[u] = dist[v]+1; q.push(u); }
+        }
+        return dist;
+      }
+      const comp = new Int32Array(n).fill(-1); let numComp = 0;
+      for (let s = 0; s < n; s++) {
+        if (comp[s] !== -1) continue;
+        bfs(s).forEach((d, i) => { if (d >= 0) comp[i] = numComp; }); numComp++;
+      }
+      const isConnected = numComp === 1;
+      const color = new Int8Array(n).fill(-1); let bipartite = true;
+      outer: for (let s = 0; s < n; s++) {
+        if (color[s] !== -1) continue;
+        color[s] = 0; const q = [s];
+        for (let h = 0; h < q.length; h++) {
+          const v = q[h];
+          for (const u of adj[v]) {
+            if (color[u] === -1) { color[u] = 1-color[v]; q.push(u); }
+            else if (color[u] === color[v]) { bipartite = false; break outer; }
+          }
+        }
+      }
+      const oddDeg = degrees.filter(d => d % 2 !== 0).length;
+      let diameter = -1;
+      const diam_computed = isConnected && n <= 300;
+      if (diam_computed) {
+        for (let s = 0; s < n; s++) { const d = Math.max(...bfs(s)); if (d > diameter) diameter = d; }
+      }
+      const col = new Int32Array(n);
+      for (let v = 0; v < n; v++) {
+        const used = new Set(adj[v].map(u => col[u]).filter(c => c > 0));
+        let c = 1; while (used.has(c)) c++; col[v] = c;
+      }
+      const exact = n <= 25; let mis = 0, clique = 0;
+      if (exact) {
+        const amat = Array.from({length: n}, (_, i) => { const row = new Uint8Array(n); adj[i].forEach(j => { row[j] = 1; }); return row; });
+        function computeMIS(cands, sz) {
+          if (!cands.length) return sz;
+          const v = cands[0], rest = cands.slice(1);
+          return Math.max(computeMIS(rest.filter(u => !amat[v][u]), sz+1), computeMIS(rest, sz));
+        }
+        function computeClique(cands, sz) {
+          if (!cands.length) return sz;
+          let best = sz;
+          for (let i = 0; i < cands.length; i++) {
+            if (sz + cands.length - i <= best) break;
+            const v = cands[i];
+            best = Math.max(best, computeClique(cands.slice(i+1).filter(u => amat[v][u]), sz+1));
+          }
+          return best;
+        }
+        const all = [...Array(n).keys()];
+        mis = computeMIS(all, 0); clique = computeClique(all, 0);
+      }
+      const ext = computeExtendedMetrics(n, adj, { edge_count: m, is_connected: isConnected });
+      return {
+        vertex_count: n, edge_count: m,
+        density: n > 1 ? (2*m)/(n*(n-1)) : 0,
+        is_connected: isConnected, connected_components: numComp,
+        min_degree: Math.min(...degrees), max_degree: Math.max(...degrees),
+        avg_degree: degrees.reduce((a,b)=>a+b,0)/n, degree_sequence: degSeq,
+        is_bipartite: bipartite,
+        has_eulerian_circuit: isConnected && oddDeg === 0 && m > 0,
+        has_eulerian_path:    isConnected && oddDeg === 2,
+        diameter, diameter_computed: diam_computed,
+        chromatic_number_greedy: Math.max(...col),
+        max_independent_set: mis, min_vertex_cover: n-mis, max_clique: clique,
+        exact_computed: exact,
+        ...ext,
+      };
     }
 
     function runAnalysis() {
-      if (graph.vertex_count() === 0) {
+      const analyzeBtn = document.getElementById('btn-analyze');
+      const scrollEl   = document.getElementById('analysis-scroll');
+
+      let isEmpty = currentMode === 'canvas'
+        ? graph.vertex_count() === 0
+        : !vivaGraph || vivaGraph.getNodesCount() === 0;
+
+      if (isEmpty) {
         scrollEl.innerHTML = '<p id="empty-msg">Build a graph, then click Analyze.</p>';
         return;
       }
-      analyzeBtn.disabled = true;
-      analyzeBtn.textContent = '...';
+      analyzeBtn.disabled = true; analyzeBtn.textContent = '…';
 
       setTimeout(() => {
-        const a = JSON.parse(graph.analyze());
+        let a;
+        if (currentMode === 'canvas') {
+          a = JSON.parse(graph.analyze());
+          const vertices = JSON.parse(graph.vertices_json());
+          const edges    = JSON.parse(graph.edges_json());
+          const n = vertices.length;
+          const idxOf = new Map(); vertices.forEach((v, i) => idxOf.set(v.id, i));
+          const adj = Array.from({length: n}, () => []);
+          edges.forEach(e => {
+            const i = idxOf.get(e.from), j = idxOf.get(e.to);
+            if (i !== undefined && j !== undefined) { adj[i].push(j); adj[j].push(i); }
+          });
+          const ext = computeExtendedMetrics(n, adj, a);
+          a = { ...a, ...ext };
+        } else {
+          a = analyzeGraph(vivaGraph);
+          if (!a) { analyzeBtn.disabled = false; analyzeBtn.textContent = 'Analyze'; return; }
+        }
 
-        // Build 0-indexed adjacency list for extended metrics
-        const vertices = JSON.parse(graph.vertices_json());
-        const edges    = JSON.parse(graph.edges_json());
-        const n = vertices.length;
-        const idxOf = new Map();
-        vertices.forEach((v, i) => idxOf.set(v.id, i));
-        const adj = Array.from({length: n}, () => []);
-        edges.forEach(e => {
-          const i = idxOf.get(e.from), j = idxOf.get(e.to);
-          if (i !== undefined && j !== undefined) { adj[i].push(j); adj[j].push(i); }
-        });
+        const bool = v => v ? '<span class="val yes">Yes</span>' : '<span class="val no">No</span>';
+        const naV  = (ok, v) => ok ? `<span class="val">${v}</span>` : '<span class="val na">N/A</span>';
+        const row  = (lbl, val) => `<div class="row"><span class="lbl">${lbl}</span>${val}</div>`;
 
-        const ext = computeExtendedMetrics(n, adj, a);
-
-        const diamStr = a.diameter === -1
-          ? '<span class="val na">∞ (disconnected)</span>'
-          : `<span class="val">${a.diameter}</span>`;
+        const diamStr = a.diameter_computed === false
+          ? '<span class="val na">N/A (n &gt; 300)</span>'
+          : a.diameter === -1
+            ? '<span class="val na">∞ (disconnected)</span>'
+            : `<span class="val">${a.diameter}</span>`;
 
         const exactNote = a.exact_computed ? '' :
           '<div class="row"><span class="lbl" style="color:#e94560;font-size:0.7rem">n &gt; 25 — NP-hard skipped</span></div>';
 
-        scrollEl.innerHTML = `
+        document.getElementById('analysis-scroll').innerHTML = `
           <details open>
             <summary>Basic</summary>
             <div class="section-body">
               ${row('Vertices', `<span class="val">${a.vertex_count}</span>`)}
               ${row('Edges',    `<span class="val">${a.edge_count}</span>`)}
-              ${row('Density',  `<span class="val">${(a.density * 100).toFixed(1)}%</span>`)}
-              ${row('Is tree',  bool(ext.isTree))}
-              ${row('Regular',  ext.isRegular ? `<span class="val yes">Yes (k=${ext.regularDeg})</span>` : '<span class="val no">No</span>')}
-              ${ext.spanningTrees !== null ? row('Spanning trees', `<span class="val">${ext.spanningTrees}</span>`) : ''}
-              ${row('Triangles', `<span class="val">${ext.triangles}</span>`)}
-              ${ext.quadrangles !== null ? row('Quadrangles (C₄)', `<span class="val">${ext.quadrangles}</span>`) : ''}
-              ${ext.girth !== null ? row('Girth', ext.girth === -1 ? '<span class="val na">∞ (acyclic)</span>' : `<span class="val">${ext.girth}</span>`) : ''}
-              ${ext.pruferSeq ? row('Prüfer seq.', `<span class="val" style="font-size:0.72rem">[${ext.pruferSeq.join(', ')}]</span>`) : ''}
+              ${row('Density',  `<span class="val">${(a.density*100).toFixed(1)}%</span>`)}
+              ${row('Is tree',  bool(a.isTree))}
+              ${row('Regular',  a.isRegular ? `<span class="val yes">Yes (k=${a.regularDeg})</span>` : '<span class="val no">No</span>')}
+              ${a.spanningTrees !== null ? row('Spanning trees', `<span class="val">${a.spanningTrees}</span>`) : ''}
+              ${row('Triangles', `<span class="val">${a.triangles}</span>`)}
+              ${a.quadrangles !== null ? row('Quadrangles (C₄)', `<span class="val">${a.quadrangles}</span>`) : ''}
+              ${a.girth !== null ? row('Girth', a.girth === -1 ? '<span class="val na">∞ (acyclic)</span>' : `<span class="val">${a.girth}</span>`) : ''}
+              ${a.pruferSeq ? row('Prüfer seq.', `<span class="val" style="font-size:0.72rem">[${a.pruferSeq.join(', ')}]</span>`) : ''}
             </div>
           </details>
-
           <details open>
             <summary>Connectivity</summary>
             <div class="section-body">
               ${row('Connected',  bool(a.is_connected))}
               ${row('Components', `<span class="val">${a.connected_components}</span>`)}
               ${row('Diameter',   diamStr)}
-              ${ext.radius !== null ? row('Radius', `<span class="val">${ext.radius}</span>`) : ''}
+              ${a.radius !== null ? row('Radius', `<span class="val">${a.radius}</span>`) : ''}
             </div>
           </details>
-
           <details open>
             <summary>Degrees</summary>
             <div class="section-body">
               ${row('Min', `<span class="val">${a.min_degree}</span>`)}
               ${row('Max', `<span class="val">${a.max_degree}</span>`)}
               ${row('Avg', `<span class="val">${a.avg_degree.toFixed(2)}</span>`)}
-              <div class="degree-seq">(${a.degree_sequence.join(', ')})</div>
+              <div class="degree-seq">(${a.degree_sequence.slice(0,40).join(', ')}${a.degree_sequence.length>40?', …':''})</div>
             </div>
           </details>
-
           <details open>
             <summary>Properties</summary>
             <div class="section-body">
@@ -941,77 +1200,71 @@
               ${row('Eulerian path',    bool(a.has_eulerian_path))}
             </div>
           </details>
-
           <details>
             <summary>Degree Indices</summary>
             <div class="section-body">
-              ${row('Zagreb M₁',   `<span class="val">${ext.m1}</span>`)}
-              ${row('Zagreb M₂',   `<span class="val">${ext.m2}</span>`)}
-              ${row('Forgotten F', `<span class="val">${ext.forgotten}</span>`)}
-              ${row('Randić',      `<span class="val">${ext.randic}</span>`)}
-              ${row('Harmonic',    `<span class="val">${ext.harmonic}</span>`)}
-              ${row('Geo.-Arith.', `<span class="val">${ext.ga}</span>`)}
-              ${row('Sum Conn.',   `<span class="val">${ext.sumConn}</span>`)}
-              ${row('Aug. Zagreb', `<span class="val">${ext.azi}</span>`)}
-              ${row('Albertson',   `<span class="val">${ext.albertson}</span>`)}
+              ${row('Zagreb M₁',   `<span class="val">${a.m1}</span>`)}
+              ${row('Zagreb M₂',   `<span class="val">${a.m2}</span>`)}
+              ${row('Forgotten F', `<span class="val">${a.forgotten}</span>`)}
+              ${row('Randić',      `<span class="val">${a.randic}</span>`)}
+              ${row('Harmonic',    `<span class="val">${a.harmonic}</span>`)}
+              ${row('Geo.-Arith.', `<span class="val">${a.ga}</span>`)}
+              ${row('Sum Conn.',   `<span class="val">${a.sumConn}</span>`)}
+              ${row('Aug. Zagreb', `<span class="val">${a.azi}</span>`)}
+              ${row('Albertson',   `<span class="val">${a.albertson}</span>`)}
             </div>
           </details>
-
           <details>
             <summary>Distance Indices</summary>
             <div class="section-body">
-              ${ext.distComputed ? `
-                ${row('Wiener',         `<span class="val">${ext.wiener}</span>`)}
-                ${row('Hyper-Wiener',   `<span class="val">${ext.hyperWiener}</span>`)}
-                ${row('Avg. distance',  `<span class="val">${ext.avgDist}</span>`)}
-                ${row('Harary',         `<span class="val">${ext.harary}</span>`)}
-                ${row('Deg. Distance',  `<span class="val">${ext.degDist}</span>`)}
-                ${row('Gutman',         `<span class="val">${ext.gutman}</span>`)}
-                ${ext.mostar  !== null ? row('Mostar',  `<span class="val">${ext.mostar}</span>`)  : ''}
-                ${ext.szeged  !== null ? row('Szeged',  `<span class="val">${ext.szeged}</span>`)  : ''}
-                ${ext.piIndex !== null ? row('PI',      `<span class="val">${ext.piIndex}</span>`) : ''}
-              ` : '<div class="row"><span class="lbl" style="color:#666;font-style:italic">N/A (disconnected)</span></div>'}
+              ${a.distComputed ? `
+                ${row('Wiener',        `<span class="val">${a.wiener}</span>`)}
+                ${row('Hyper-Wiener',  `<span class="val">${a.hyperWiener}</span>`)}
+                ${row('Avg. distance', `<span class="val">${a.avgDist}</span>`)}
+                ${row('Harary',        `<span class="val">${a.harary}</span>`)}
+                ${row('Deg. Distance', `<span class="val">${a.degDist}</span>`)}
+                ${row('Gutman',        `<span class="val">${a.gutman}</span>`)}
+                ${a.mostar  !== null ? row('Mostar',  `<span class="val">${a.mostar}</span>`)  : ''}
+                ${a.szeged  !== null ? row('Szeged',  `<span class="val">${a.szeged}</span>`)  : ''}
+                ${a.piIndex !== null ? row('PI',      `<span class="val">${a.piIndex}</span>`) : ''}
+              ` : '<div class="row"><span class="lbl" style="color:#666;font-style:italic">N/A (disconnected or n&gt;300)</span></div>'}
             </div>
           </details>
-
           <details>
             <summary>Eccentricity Indices</summary>
             <div class="section-body">
-              ${ext.totalEcc !== null ? `
-                ${row('Total eccentricity', `<span class="val">${ext.totalEcc}</span>`)}
-                ${row('Avg. eccentricity',  `<span class="val">${ext.avgEcc}</span>`)}
-                ${row('Eccentric conn.',    `<span class="val">${ext.eccConn}</span>`)}
-                ${row('Conn. eccentric',    `<span class="val">${ext.connEcc}</span>`)}
-              ` : '<div class="row"><span class="lbl" style="color:#666;font-style:italic">N/A (disconnected)</span></div>'}
+              ${a.totalEcc !== null ? `
+                ${row('Total eccentricity', `<span class="val">${a.totalEcc}</span>`)}
+                ${row('Avg. eccentricity',  `<span class="val">${a.avgEcc}</span>`)}
+                ${row('Eccentric conn.',    `<span class="val">${a.eccConn}</span>`)}
+                ${row('Conn. eccentric',    `<span class="val">${a.connEcc}</span>`)}
+              ` : '<div class="row"><span class="lbl" style="color:#666;font-style:italic">N/A (disconnected or n&gt;300)</span></div>'}
             </div>
           </details>
-
           <details>
             <summary>Spectral <small style="color:#555;text-transform:none;font-weight:400;letter-spacing:0">(n≤20)</small></summary>
             <div class="section-body">
-              ${ext.adjSpectrum ? `
-                ${row('Spectral radius',    `<span class="val">${ext.spectralRadius}</span>`)}
-                ${row('Energy',             `<span class="val">${ext.energy}</span>`)}
-                ${row('Estrada index',      `<span class="val">${ext.estrada}</span>`)}
-                <div class="degree-seq">λ: [${ext.adjSpectrum.join(', ')}]</div>
-                ${row('Fiedler value',      `<span class="val">${ext.fiedler}</span>`)}
-                ${row('Lap. energy (LEL)',  `<span class="val">${ext.lel}</span>`)}
-                <div class="degree-seq">μ: [${ext.lapSpectrum.join(', ')}]</div>
-                ${row('SL energy',          `<span class="val">${ext.slEnergy}</span>`)}
-                <div class="degree-seq">q: [${ext.slSpectrum.join(', ')}]</div>
+              ${a.adjSpectrum ? `
+                ${row('Spectral radius',   `<span class="val">${a.spectralRadius}</span>`)}
+                ${row('Energy',            `<span class="val">${a.energy}</span>`)}
+                ${row('Estrada index',     `<span class="val">${a.estrada}</span>`)}
+                <div class="degree-seq">λ: [${a.adjSpectrum.join(', ')}]</div>
+                ${row('Fiedler value',     `<span class="val">${a.fiedler}</span>`)}
+                ${row('Lap. energy (LEL)', `<span class="val">${a.lel}</span>`)}
+                <div class="degree-seq">μ: [${a.lapSpectrum.join(', ')}]</div>
+                ${row('SL energy',         `<span class="val">${a.slEnergy}</span>`)}
+                <div class="degree-seq">q: [${a.slSpectrum.join(', ')}]</div>
               ` : '<div class="row"><span class="val na">N/A (n &gt; 20)</span></div>'}
             </div>
           </details>
-
           <details>
             <summary>Matching &amp; Coloring</summary>
             <div class="section-body">
-              ${row('Max matching',         `<span class="val">${ext.matchingSize}</span>`)}
+              ${row('Max matching',         `<span class="val">${a.matchingSize}</span>`)}
               ${row('Chromatic # (greedy)', `<span class="val">${a.chromatic_number_greedy}</span>`)}
-              ${row('Chromatic index',      `<span class="val">${ext.chromaticIndex}</span>`)}
+              ${row('Chromatic index',      `<span class="val">${a.chromaticIndex}</span>`)}
             </div>
           </details>
-
           <details open>
             <summary>NP-Hard <small style="color:#555;text-transform:none;font-weight:400;letter-spacing:0">(n≤25/15)</small></summary>
             <div class="section-body">
@@ -1019,28 +1272,26 @@
               ${row('Max independent set', naV(a.exact_computed, a.max_independent_set))}
               ${row('Min vertex cover',    naV(a.exact_computed, a.min_vertex_cover))}
               ${row('Max clique',          naV(a.exact_computed, a.max_clique))}
-              ${ext.hamiltonianCycle !== null
-                ? row('Hamiltonian cycle', bool(ext.hamiltonianCycle))
+              ${a.hamiltonianCycle !== null
+                ? row('Hamiltonian cycle', bool(a.hamiltonianCycle))
                 : row('Hamiltonian cycle', '<span class="val na">N/A (n &gt; 15)</span>')}
-              ${ext.hamiltonianPath !== null
-                ? row('Hamiltonian path', bool(ext.hamiltonianPath))
+              ${a.hamiltonianPath !== null
+                ? row('Hamiltonian path', bool(a.hamiltonianPath))
                 : row('Hamiltonian path', '<span class="val na">N/A (n &gt; 15)</span>')}
             </div>
           </details>
         `;
 
-        analyzeBtn.disabled = false;
-        analyzeBtn.textContent = 'Analyze';
+        analyzeBtn.disabled = false; analyzeBtn.textContent = 'Analyze';
       }, 10);
     }
 
-    analyzeBtn.addEventListener('click', runAnalysis);
+    document.getElementById('btn-analyze').addEventListener('click', runAnalysis);
 
     // ── resize ────────────────────────────────────────────────────────────────
-    const wrap = canvas.parentElement;
     function resize() {
-      canvas.width  = wrap.clientWidth;
-      canvas.height = wrap.clientHeight;
+      canvas.width  = canvasWrap.clientWidth;
+      canvas.height = canvasWrap.clientHeight;
       render();
     }
     window.addEventListener('resize', resize);
