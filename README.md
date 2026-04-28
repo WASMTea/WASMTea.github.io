@@ -26,6 +26,29 @@ Force-directed 3D graph viewer for large graphs.
 - Generators: Random (Erdős–Rényi), Barabási–Albert, and all standard types — up to 500 vertices
 - Live physics controls (spring, gravity, drag)
 
+### [Conjecture Checker](conjecture.html)
+Batch graph analysis tool for exploring and testing graph-theoretic conjectures.
+
+**Graph sources**
+- Upload a `.g6` file (McKay Graph6 format) — each line is one graph
+- Generator sweep — choose a graph type and specify parameter ranges; the tool enumerates every combination (Cartesian product)
+
+**Metrics**
+Over 40 graph metrics organised in collapsible groups:
+- *Basic* — order, size, density, degree sequence, min/max/avg degree
+- *Connectivity* — components, connectivity, bipartiteness, tree/forest checks
+- *Paths & distances* — diameter, radius, Wiener index, average distance
+- *Spectral* — largest adjacency eigenvalue, algebraic connectivity (Fiedler value)
+- *Coloring* — chromatic number, clique number, independence number
+- *Centrality* — max betweenness, max closeness, max eccentricity
+- *Structural* — girth, matching number, vertex/edge cover, domination number
+
+**Conjecture expression**
+Write any JavaScript expression using metric names as variables (e.g. `wiener <= n*(n-1)/2`). Rows are highlighted green when the expression holds and red when a counterexample is found.
+
+**Output**
+Results table with one row per graph showing the G6 string and all selected metric values. Download the full dataset as CSV at any time.
+
 ---
 
 ## Tech stack
