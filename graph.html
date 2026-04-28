@@ -112,7 +112,6 @@
 
     /* ── vivagraph renderer ────────────────────────────────────────────────── */
     #graph-container {
-      display: none;
       flex: 1;
       position: relative;
       overflow: hidden;
@@ -360,7 +359,7 @@
       <canvas id="canvas"></canvas>
     </div>
 
-    <div id="graph-container"></div>
+    <div id="graph-container" style="display:none"></div>
 
     <aside id="sidebar">
       <div class="sidebar-tabs">
@@ -443,10 +442,10 @@
       if (currentMode === 'vivagraph') return;
       currentMode = 'vivagraph';
       canvasWrap.style.display = 'none';
-      container.style.display  = '';
+      container.style.display  = 'block';   // explicit: '' would revert to CSS display:none
       modeBadge.textContent = 'Force-directed';
       modeBadge.classList.add('large');
-      btnMove.style.display = 'none';  // physics drives movement
+      btnMove.style.display = 'none';
       btnSim.style.display  = '';
       edgeDrag = moveDrag = null;
       edgeSource = null;
@@ -865,7 +864,9 @@
       const g = Viva.Graph.graph();
       for (let i = 0; i < data.n; i++) g.addNode(i);
       data.edges.forEach(([u, v]) => g.addLink(u, v));
-      buildRenderer(g);
+      // Wait one frame so the container has been laid out and has real dimensions
+      // before VivaGraph creates its WebGL canvas inside it.
+      requestAnimationFrame(() => buildRenderer(g));
     }
 
     function applyGenerator(gen, params) {
