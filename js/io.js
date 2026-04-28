@@ -4,6 +4,7 @@ export const FORMATS = [
   { id: 'gml',     label: 'GML (.gml)',              ext: '.gml',     mime: 'text/plain'       },
   { id: 'dot',     label: 'DOT / Graphviz (.dot)',   ext: '.dot',     mime: 'text/plain'       },
   { id: 'csv',     label: 'CSV edge list (.csv)',    ext: '.csv',     mime: 'text/csv'         },
+  { id: 'g6',      label: 'Graph6 (.g6)',            ext: '.g6',      mime: 'text/plain'       },
 ];
 
 // ── serializers ───────────────────────────────────────────────────────────────
@@ -85,6 +86,82 @@ export function toCSV(data) {
   return lines.join('\n');
 }
 
+// Graph6 encoding (McKay's compact ASCII format, topology only, n ≤ 258047).
+// Spec: https://users.cecs.anu.edu.au/~bdm/data/formats.txt
+export function toG6(data) {
+  const { n, edges } = data;
+  if (n > 258047) throw new Error('G6: n > 258047 not supported');
+
+  // Build adjacency set for fast lookup (store as min,max pairs)
+  const adj = new Set(edges.map(([u, v]) => `${Math.min(u, v)},${Math.max(u, v)}`));
+
+  // Encode n
+  const nBytes = n <= 62
+    ? [n + 63]
+    : [126, ((n >> 12) & 0x3F) + 63, ((n >> 6) & 0x3F) + 63, (n & 0x3F) + 63];
+
+  // Bit vector: upper triangle j > i, column-by-column (j=1..n-1, i=0..j-1)
+  const bits = [];
+  for (let j = 1; j < n; j++)
+    for (let i = 0; i < j; i++)
+      bits.push(adj.has(`${i},${j}`) ? 1 : 0);
+
+  // Pad to multiple of 6
+  while (bits.length % 6 !== 0) bits.push(0);
+
+  // Pack into bytes (6 bits each, offset +63)
+  const dataBytes = [];
+  for (let k = 0; k < bits.length; k += 6) {
+    let v = 0;
+    for (let b = 0; b < 6; b++) v = (v << 1) | bits[k + b];
+    dataBytes.push(v + 63);
+  }
+
+  return String.fromCharCode(...nBytes, ...dataBytes) + '\n';
+}
+
+export function fromG6(text) {
+  let s = text.trim();
+
+  // Strip optional header
+  if (s.startsWith('>>graph6<<')) s = s.slice(10).trimStart();
+
+  if (s.startsWith(':') || s.startsWith('&'))
+    throw new Error('G6: sparse6/digraph6 not supported — use a graph6 (.g6) file');
+
+  // Decode: each char → 6-bit value (char code − 63)
+  const bytes = Array.from(s).map(c => c.charCodeAt(0) - 63);
+
+  // Decode n
+  let n, pos;
+  if (bytes[0] !== 63) {          // single byte (n 0–62)
+    n = bytes[0]; pos = 1;
+  } else if (bytes[1] !== 63) {   // 4-byte encoding (n 63–258047)
+    n = (bytes[1] << 12) | (bytes[2] << 6) | bytes[3];
+    pos = 4;
+  } else {                         // 8-byte encoding (large n)
+    n = (bytes[2] * 2**30) | (bytes[3] << 24) | (bytes[4] << 18) |
+        (bytes[5] << 12)   | (bytes[6] << 6)  | bytes[7];
+    pos = 8;
+  }
+
+  // Unpack bits from remaining bytes
+  const bits = [];
+  for (let k = pos; k < bytes.length; k++) {
+    const v = bytes[k];
+    for (let b = 5; b >= 0; b--) bits.push((v >> b) & 1);
+  }
+
+  // Reconstruct upper-triangle edges
+  const edges = [];
+  let bi = 0;
+  for (let j = 1; j < n; j++)
+    for (let i = 0; i < j; i++)
+      if (bits[bi++]) edges.push([i, j]);
+
+  return { n, edges };
+}
+
 export function serialize(data, fmtId) {
   switch (fmtId) {
     case 'json':    return toJSON(data);
@@ -92,6 +169,7 @@ export function serialize(data, fmtId) {
     case 'gml':     return toGML(data);
     case 'dot':     return toDOT(data);
     case 'csv':     return toCSV(data);
+    case 'g6':      return toG6(data);
     default: throw new Error(`Unknown format: ${fmtId}`);
   }
 }
@@ -293,12 +371,14 @@ export function deserialize(text, filename = '') {
   if (name.endsWith('.gml'))     return fromGML(text);
   if (name.endsWith('.dot') || name.endsWith('.gv')) return fromDOT(text);
   if (name.endsWith('.csv'))     return fromCSV(text);
+  if (name.endsWith('.g6') || name.endsWith('.graph6')) return fromG6(text);
 
   // Sniff content
   const t = text.trimStart();
-  if (t.startsWith('{'))         return fromJSON(text);
-  if (t.startsWith('<'))         return fromGraphML(text);
-  if (/^graph\s*\[/m.test(t))    return fromGML(text);
+  if (t.startsWith('>>graph6<<')) return fromG6(text);
+  if (t.startsWith('{'))          return fromJSON(text);
+  if (t.startsWith('<'))          return fromGraphML(text);
+  if (/^graph\s*\[/m.test(t))     return fromGML(text);
   if (/^(?:strict\s+)?(?:di)?graph\b/i.test(t)) return fromDOT(text);
   return fromCSV(text);
 }

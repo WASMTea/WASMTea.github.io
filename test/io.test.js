@@ -6,6 +6,7 @@ import {
   toGML, fromGML,
   toDOT, fromDOT,
   toCSV, fromCSV,
+  toG6, fromG6,
   serialize, deserialize,
 } from '../js/io.js';
 
@@ -59,9 +60,9 @@ function approxPos(a, b, tol = 0.5) {
 // ── FORMATS export ────────────────────────────────────────────────────────────
 
 describe('FORMATS', () => {
-  it('exports an array with 5 entries', () => {
+  it('exports an array with 6 entries', () => {
     expect(Array.isArray(FORMATS)).toBe(true);
-    expect(FORMATS.length).toBe(5);
+    expect(FORMATS.length).toBe(6);
   });
 
   it('each entry has id, label, ext, mime', () => {
@@ -368,6 +369,139 @@ describe('CSV round-trip', () => {
     const raw = '0 1\n1 2\n2 0';
     const rt = fromCSV(raw);
     expect(rt.edges.length).toBe(3);
+  });
+});
+
+// ── Graph6 ────────────────────────────────────────────────────────────────────
+
+describe('Graph6 round-trip', () => {
+  it('empty graph (n=0)', () => {
+    const rt = fromG6(toG6(empty));
+    expect(rt.n).toBe(0);
+    expect(rt.edges).toEqual([]);
+  });
+
+  it('single vertex (n=1)', () => {
+    const rt = fromG6(toG6(single));
+    expect(rt.n).toBe(1);
+    expect(rt.edges).toEqual([]);
+  });
+
+  it('isolated vertices', () => {
+    const rt = fromG6(toG6(isolated));
+    expect(rt.n).toBe(3);
+    expect(rt.edges).toEqual([]);
+  });
+
+  it('triangle topology preserved', () => {
+    const rt = fromG6(toG6(triangle));
+    expect(sameTopology(rt, triangle)).toBe(true);
+  });
+
+  it('4-cycle (noPos) topology preserved', () => {
+    const rt = fromG6(toG6(noPos));
+    expect(sameTopology(rt, noPos)).toBe(true);
+  });
+
+  it('star graph topology preserved', () => {
+    const rt = fromG6(toG6(star4));
+    expect(sameTopology(rt, star4)).toBe(true);
+  });
+
+  it('path graph topology preserved', () => {
+    const rt = fromG6(toG6(path5));
+    expect(sameTopology(rt, path5)).toBe(true);
+  });
+
+  it('output is a single printable ASCII line', () => {
+    const text = toG6(noPos).trim();
+    expect(text.split('\n').length).toBe(1);
+    for (const c of text) {
+      const code = c.charCodeAt(0);
+      expect(code).toBeGreaterThanOrEqual(63);
+      expect(code).toBeLessThanOrEqual(126);
+    }
+  });
+
+  it('n=62 fits in single-byte encoding (boundary)', () => {
+    const data = { n: 62, edges: [] };
+    const text = toG6(data).trim();
+    // first char should be 62+63=125
+    expect(text.charCodeAt(0)).toBe(125);
+    const rt = fromG6(text);
+    expect(rt.n).toBe(62);
+  });
+
+  it('n=63 uses four-byte encoding (boundary)', () => {
+    const data = { n: 63, edges: [] };
+    const text = toG6(data).trim();
+    // first char should be 126 (~)
+    expect(text.charCodeAt(0)).toBe(126);
+    const rt = fromG6(text);
+    expect(rt.n).toBe(63);
+  });
+
+  it('n=100 multi-byte encoding round-trips', () => {
+    const data = { n: 100, edges: [[0,1],[1,2],[50,99]] };
+    const rt = fromG6(toG6(data));
+    expect(sameTopology(rt, data)).toBe(true);
+  });
+
+  it('complete graph K4 has 6 edges after round-trip', () => {
+    const k4 = { n: 4, edges: [[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]] };
+    const rt = fromG6(toG6(k4));
+    expect(rt.n).toBe(4);
+    expect(rt.edges.length).toBe(6);
+    expect(sameTopology(rt, k4)).toBe(true);
+  });
+
+  it('known K4 encoding is "C~" (McKay reference)', () => {
+    // K4: n=4 → byte 4+63=67='C'; upper tri all 1s → bits=111111 → 63+63=126='~'
+    const k4 = { n: 4, edges: [[0,1],[0,2],[0,3],[1,2],[1,3],[2,3]] };
+    expect(toG6(k4).trim()).toBe('C~');
+  });
+
+  it('known empty on 4 vertices is "C?" (McKay reference)', () => {
+    // n=4 → 'C'; no edges → 000000 → 0+63=63='?'
+    const data = { n: 4, edges: [] };
+    expect(toG6(data).trim()).toBe('C?');
+  });
+
+  it('strips >>graph6<< header on load', () => {
+    const text = '>>graph6<<' + toG6(triangle).trim();
+    const rt = fromG6(text);
+    expect(sameTopology(rt, triangle)).toBe(true);
+  });
+
+  it('throws on sparse6 input', () => {
+    expect(() => fromG6(':Foo')).toThrow();
+  });
+
+  it('throws for n > 258047', () => {
+    expect(() => toG6({ n: 258048, edges: [] })).toThrow();
+  });
+
+  it('positions are not preserved (topology only)', () => {
+    const rt = fromG6(toG6(triangle));
+    expect(rt.vertices).toBeUndefined();
+  });
+
+  it('serialize/deserialize dispatch', () => {
+    const text = serialize(noPos, 'g6');
+    const rt = deserialize(text, 'graph.g6');
+    expect(sameTopology(rt, noPos)).toBe(true);
+  });
+
+  it('auto-detect by >>graph6<< header', () => {
+    const text = '>>graph6<<' + toG6(noPos).trim();
+    const rt = deserialize(text);
+    expect(sameTopology(rt, noPos)).toBe(true);
+  });
+
+  it('auto-detect by .graph6 extension', () => {
+    const text = toG6(noPos);
+    const rt = deserialize(text, 'graph.graph6');
+    expect(sameTopology(rt, noPos)).toBe(true);
   });
 });
 
